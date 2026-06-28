@@ -8,6 +8,8 @@
 #include "audio_core/detectors/PauseDetector.hpp"
 #include "audio_core/detectors/TransientDetector.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <string>
 #include <vector>
 
@@ -27,6 +29,8 @@ struct PipelineConfig {
     bool detect_breaths = true;
 
     static PipelineConfig from_json_file(const std::string& path);
+    static PipelineConfig from_json(const nlohmann::json& root);
+    nlohmann::json to_json() const;
     void to_json_file(const std::string& path) const;
 };
 

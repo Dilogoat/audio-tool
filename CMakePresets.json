@@ -8,7 +8,7 @@
   "configurePresets": [
     {
       "name": "default",
-      "displayName": "Default (MSVC + vcpkg)",
+      "displayName": "Default (VS 2026 MSVC 14.50+ + vcpkg)",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
@@ -19,7 +19,7 @@
     },
     {
       "name": "debug",
-      "displayName": "Debug (MSVC + vcpkg)",
+      "displayName": "Debug (VS 2026 MSVC 14.50+ + vcpkg)",
       "inherits": "default",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug"

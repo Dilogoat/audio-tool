@@ -52,6 +52,10 @@ PipelineConfig PipelineConfig::from_json_file(const std::string& path) {
         throw std::runtime_error("Failed to open config file: " + path);
     }
     const json root = json::parse(in);
+    return from_json(root);
+}
+
+PipelineConfig PipelineConfig::from_json(const nlohmann::json& root) {
     PipelineConfig c;
 
     if (root.contains("detect")) {
@@ -97,12 +101,14 @@ PipelineConfig PipelineConfig::from_json_file(const std::string& path) {
     return c;
 }
 
+nlohmann::json PipelineConfig::to_json() const { return config_to_json(*this); }
+
 void PipelineConfig::to_json_file(const std::string& path) const {
     std::ofstream out(path);
     if (!out) {
         throw std::runtime_error("Failed to write config file: " + path);
     }
-    out << config_to_json(*this).dump(2);
+    out << to_json().dump(2);
 }
 
 Pipeline::Pipeline(PipelineConfig config) : config_(config) {}
