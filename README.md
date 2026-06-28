@@ -41,6 +41,12 @@ Run the app:
 .\build\audio_tool.exe
 ```
 
+## Download / run (no build required)
+
+A portable Windows x64 build is in the [`dist/`](dist/) folder. Download the
+whole folder, keep the files together, and run `audio_tool.exe`. See
+[`dist/README.txt`](dist/README.txt) for usage.
+
 ## Project layout
 
 - `src/core/` - DSP engine and detectors

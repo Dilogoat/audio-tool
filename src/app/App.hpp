@@ -28,8 +28,14 @@ public:
     void shutdown();
 
 private:
+    struct UiSnapshot;
+
     void process_frame();
     void render_ui();
+    void render_toolbar();
+    void render_sidebar(const UiSnapshot& snap);
+    void render_plots(const UiSnapshot& snap);
+    void open_audio();
     void run_analysis();
     void start_playback();
     void stop_playback();
@@ -50,7 +56,8 @@ private:
 
     double view_start_sec_ = 0.0;
     double view_end_sec_ = 10.0;
-    bool follow_playhead_ = true;
+    bool follow_playhead_ = false;
+    int marker_remove_request_ = -1;
 
     audio_core::PauseDetectorConfig pause_cfg_{};
     audio_core::TransientDetectorConfig transient_cfg_{};

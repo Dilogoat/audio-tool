@@ -13,6 +13,10 @@ cmake-build-*/
 *.ilk
 *.exp
 
+# Distributable portable build (binaries intentionally tracked)
+!dist/
+!dist/**
+
 # vcpkg
 external/vcpkg/
 
