@@ -255,9 +255,90 @@ void App::run_analysis() {
             score_frames_ = std::move(result.scores);
             spectrogram_ = std::move(spec);
             cleaned_audio_ = std::move(result.cleaned);
+            edited_cache_dirty_ = true;
+            edited_audio_.clear();
         }
 
         analyzing_ = false;
+    });
+}
+
+void App::rebuild_edited_cache() {
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    if (!has_audio_) {
+        edited_audio_.clear();
+        edited_cache_dirty_ = false;
+        return;
+    }
+    const auto edited = audio_core::apply_cuts(audio_.samples, audio_.sample_rate, markers_.all(), edit_cfg_);
+    edited_audio_ = std::move(edited.samples);
+    edited_cache_dirty_ = false;
+}
+
+void App::start_playback_segment(double start_sec, double end_sec) {
+    if (!has_audio_) {
+        return;
+    }
+    stop_playback();
+    playhead_sec_ = start_sec;
+    playing_ = true;
+
+    if (playback_thread_.joinable()) {
+        playback_thread_.join();
+    }
+
+    playback_thread_ = std::thread([this, start_sec, end_sec]() {
+        audio_core::AudioData local;
+        std::vector<float> source;
+        int sample_rate = 44100;
+        {
+            std::lock_guard<std::mutex> lock(data_mutex_);
+            local = audio_;
+            sample_rate = local.sample_rate;
+            if (playback_source_ == PlaybackSource::Cleaned) {
+                source = cleaned_audio_.empty() ? local.samples : cleaned_audio_;
+            } else if (playback_source_ == PlaybackSource::Edited) {
+                if (edited_cache_dirty_) {
+                    const auto edited = audio_core::apply_cuts(local.samples, local.sample_rate,
+                                                               markers_.all(), edit_cfg_);
+                    edited_audio_ = edited.samples;
+                    edited_cache_dirty_ = false;
+                }
+                source = edited_audio_.empty() ? local.samples : edited_audio_;
+            } else {
+                source = local.samples;
+            }
+        }
+
+        const double duration = source.empty() ? 0.0 : static_cast<double>(source.size()) / sample_rate;
+        const double clip_start = (std::max)(0.0, start_sec);
+        const double clip_end = (std::min)(duration, end_sec);
+        if (clip_end <= clip_start || source.empty()) {
+            playing_ = false;
+            return;
+        }
+
+        const int start_sample = static_cast<int>(clip_start * sample_rate);
+        const int end_sample = static_cast<int>(clip_end * sample_rate);
+        std::vector<float> segment(source.begin() + start_sample,
+                                   source.begin() + (std::min)(end_sample, static_cast<int>(source.size())));
+
+        PaStream* stream = nullptr;
+        Pa_OpenDefaultStream(&stream, 0, 1, paFloat32, sample_rate, paFramesPerBufferUnspecified, nullptr, nullptr);
+        Pa_StartStream(stream);
+
+        std::size_t offset = 0;
+        const int chunk = 1024;
+        while (playing_ && offset < segment.size()) {
+            const auto count = (std::min<std::size_t>)(chunk, segment.size() - offset);
+            Pa_WriteStream(stream, segment.data() + offset, static_cast<unsigned long>(count));
+            offset += count;
+            playhead_sec_ = clip_start + static_cast<double>(offset) / sample_rate;
+        }
+
+        Pa_StopStream(stream);
+        Pa_CloseStream(stream);
+        playing_ = false;
     });
 }
 
@@ -265,41 +346,29 @@ void App::start_playback() {
     if (!has_audio_ || playing_) {
         return;
     }
+    const double end = static_cast<double>(audio_.samples.size()) / audio_.sample_rate;
+    start_playback_segment(playhead_sec_.load(), end);
+}
 
-    playing_ = true;
-    if (playback_thread_.joinable()) {
-        playback_thread_.join();
+void App::preview_marker_at(int index) {
+    std::vector<audio_core::Marker> local_markers;
+    double duration = 0.0;
+    {
+        std::lock_guard<std::mutex> lock(data_mutex_);
+        if (index < 0 || index >= static_cast<int>(markers_.all().size())) {
+            return;
+        }
+        local_markers = markers_.all();
+        duration = audio_.samples.empty()
+                       ? 0.0
+                       : static_cast<double>(audio_.samples.size()) / audio_.sample_rate;
     }
-
-    playback_thread_ = std::thread([this]() {
-        audio_core::AudioData local;
-        {
-            std::lock_guard<std::mutex> lock(data_mutex_);
-            local = audio_;
-        }
-
-        const double start = playhead_sec_.load();
-        const int start_sample = static_cast<int>(start * local.sample_rate);
-        std::vector<float> tail(local.samples.begin() + start_sample, local.samples.end());
-
-        PaStream* stream = nullptr;
-        Pa_OpenDefaultStream(&stream, 0, 1, paFloat32, local.sample_rate,
-                             paFramesPerBufferUnspecified, nullptr, nullptr);
-        Pa_StartStream(stream);
-
-        std::size_t offset = 0;
-        const int chunk = 1024;
-        while (playing_ && offset < tail.size()) {
-            const auto count = (std::min<std::size_t>)(chunk, tail.size() - offset);
-            Pa_WriteStream(stream, tail.data() + offset, static_cast<unsigned long>(count));
-            offset += count;
-            playhead_sec_ = start + static_cast<double>(offset) / local.sample_rate;
-        }
-
-        Pa_StopStream(stream);
-        Pa_CloseStream(stream);
-        playing_ = false;
-    });
+    const auto& m = local_markers[static_cast<std::size_t>(index)];
+    const double pre = 2.0;
+    const double post = 2.0;
+    const double start = (std::max)(0.0, m.start_sec - pre);
+    const double end = (std::min)(duration, m.end_sec + post);
+    start_playback_segment(start, end);
 }
 
 void App::stop_playback() {
@@ -333,6 +402,8 @@ void App::open_audio() {
         score_frames_.clear();
         spectrogram_ = {};
         cleaned_audio_.clear();
+        edited_audio_.clear();
+        edited_cache_dirty_ = true;
         view_start_sec_ = 0.0;
         view_end_sec_ = (std::min)(30.0, static_cast<double>(audio_.samples.size()) / audio_.sample_rate);
         playhead_sec_ = 0.0;
@@ -376,8 +447,13 @@ void App::render_toolbar() {
     if (ImGui::Button("Export Markers", ImVec2(120, 0))) {
         try {
             std::lock_guard<std::mutex> lock(data_mutex_);
-            const auto out = std::filesystem::path(file_path_).replace_extension(".markers.json");
-            markers_.save_json(out.string());
+            const auto stem = std::filesystem::path(file_path_).stem().string();
+            const auto dir = std::filesystem::path(file_path_).parent_path().string();
+            const double duration = audio_.samples.empty()
+                                        ? 0.0
+                                        : static_cast<double>(audio_.samples.size()) / audio_.sample_rate;
+            audio_core::export_all_marker_formats(dir, stem, markers_.all(), duration, audio_.sample_rate);
+            markers_.save_json((std::filesystem::path(dir) / (stem + ".markers.json")).string());
         } catch (const std::exception& ex) {
             std::cerr << ex.what() << '\n';
         }
@@ -427,6 +503,24 @@ void App::render_sidebar(const UiSnapshot& snap) {
     } else {
         ImGui::TextDisabled("No file loaded");
     }
+
+    ImGui::Dummy(ImVec2(0, 6));
+    ImGui::Separator();
+    ImGui::Dummy(ImVec2(0, 6));
+
+    ImGui::TextDisabled("PLAYBACK");
+    const char* source_labels[] = {"Original", "Cleaned", "Edited"};
+    int source_idx = static_cast<int>(playback_source_);
+    if (ImGui::Combo("Source", &source_idx, source_labels, 3)) {
+        playback_source_ = static_cast<PlaybackSource>(source_idx);
+        stop_playback();
+    }
+    ImGui::BeginDisabled(!has_audio_ || selected_marker_ < 0);
+    if (ImGui::Button("Preview marker", ImVec2(-1, 0))) {
+        preview_marker_request_ = selected_marker_;
+    }
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("Double-click a marker to preview +/- 2s.");
 
     ImGui::Dummy(ImVec2(0, 6));
     ImGui::Separator();
@@ -492,13 +586,18 @@ void App::render_sidebar(const UiSnapshot& snap) {
                            ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker, ImVec2(12, 12));
         ImGui::SameLine();
         if (ImGui::Selectable(
-                (audio_core::marker_type_to_string(m.type) + "##" + std::to_string(i)).c_str(), false)) {
+                (audio_core::marker_type_to_string(m.type) + "##" + std::to_string(i)).c_str(),
+                selected_marker_ == i)) {
+            selected_marker_ = i;
             const double len = (std::max)(0.5, (m.end_sec - m.start_sec) * 4.0);
             const double center = (m.start_sec + m.end_sec) * 0.5;
             view_start_sec_ = (std::max)(0.0, center - len * 0.5);
             view_end_sec_ = (std::min)(snap.duration, center + len * 0.5);
             playhead_sec_ = m.start_sec;
             follow_playhead_ = false;
+        }
+        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+            preview_marker_request_ = i;
         }
         ImGui::SameLine();
         ImGui::TextDisabled("%.2f-%.2fs", m.start_sec, m.end_sec);
@@ -689,8 +788,13 @@ void App::render_ui() {
             updated.erase(updated.begin() + marker_remove_request_);
             markers_ = {};
             markers_.merge(updated);
+            edited_cache_dirty_ = true;
         }
         marker_remove_request_ = -1;
+        if (preview_marker_request_ >= 0) {
+            preview_marker_at(preview_marker_request_);
+        }
+        preview_marker_request_ = -1;
 
         snap.audio = audio_;
         snap.markers = markers_;

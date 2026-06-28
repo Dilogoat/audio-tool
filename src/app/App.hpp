@@ -3,6 +3,7 @@
 #include "audio_core/AudioFile.hpp"
 #include "audio_core/CompositeScore.hpp"
 #include "audio_core/Editor.hpp"
+#include "audio_core/MarkerExports.hpp"
 #include "audio_core/Markers.hpp"
 #include "audio_core/Pipeline.hpp"
 #include "audio_core/RmsAnalyzer.hpp"
@@ -40,7 +41,12 @@ private:
     void open_audio();
     void run_analysis();
     void start_playback();
+    void start_playback_segment(double start_sec, double end_sec);
     void stop_playback();
+    void rebuild_edited_cache();
+    void preview_marker_at(int index);
+
+    enum class PlaybackSource { Original, Cleaned, Edited };
 
     GLFWwindow* window_ = nullptr;
     std::string file_path_;
@@ -50,9 +56,11 @@ private:
     std::vector<audio_core::ScoreFrame> score_frames_;
     audio_core::Spectrogram spectrogram_;
     std::vector<float> cleaned_audio_;
+    std::vector<float> edited_audio_;
 
     bool has_audio_ = false;
     bool analyzing_ = false;
+    bool edited_cache_dirty_ = true;
     std::thread analysis_thread_;
     std::mutex data_mutex_;
 
@@ -60,6 +68,9 @@ private:
     double view_end_sec_ = 10.0;
     bool follow_playhead_ = false;
     int marker_remove_request_ = -1;
+    int preview_marker_request_ = -1;
+    int selected_marker_ = -1;
+    PlaybackSource playback_source_ = PlaybackSource::Original;
 
     audio_core::PauseDetectorConfig pause_cfg_{};
     audio_core::TransientDetectorConfig transient_cfg_{};

@@ -15,7 +15,7 @@ Native C++ desktop application and CLI for detecting non-speech artifacts in lon
 | **Detection** | Pause (RMS), click/plosive (transient), breath (spectral HF) |
 | **Visualization** | Waveform, RMS envelope, composite heatmap, spectrogram (ImGui + ImPlot) |
 | **Remediation** | Spectral attenuation (`--clean`) or physical cut + crossfade (`--cut`) |
-| **Export** | JSON markers, Audacity labels, cleaned/edited WAV |
+| **Export** | JSON markers, pro-editor sidecars (CSV, EDL, FCP XML, Reaper, Audition, Audacity), cleaned/edited WAV |
 | **Batch** | Headless CLI with presets, logging, JSON reports, recursive folders |
 | **Safety** | Source files are never modified — all outputs go to a separate folder |
 
@@ -62,6 +62,12 @@ audio_tool_cli batch "D:\recordings" --out-dir "D:\out" --cut pauses,breaths
 # Export Audacity labels for manual editing in a DAW
 audio_tool_cli analyze "D:\recordings\episode.flac" --labels
 
+# Export all pro-editor marker sidecars (CSV, EDL, FCP XML, Reaper, Audition, Audacity)
+audio_tool_cli analyze "D:\recordings\episode.wav" --export-markers all
+
+# QA pass over a folder of real recordings
+python scripts\qa_batch.py "D:\recordings" --out qa-out
+
 # Write a default config you can edit
 audio_tool_cli init-config mypreset.json
 
@@ -79,11 +85,16 @@ For input `<name>.<ext>` (written to the output folder, never over the source):
 | `<name>.cleaned.wav` | `--clean` |
 | `<name>.edited.wav` | `--cut` |
 | `<name>.labels.txt` | `--labels` |
+| `<name>.markers.csv` | `--export-markers` (includes `csv`) |
+| `<name>.markers.edl` | `--export-markers` (includes `edl`) |
+| `<name>.markers.fcpxml` | `--export-markers` (includes `fcpxml`) |
+| `<name>.reaper-markers.csv` | `--export-markers` (includes `reaper`) |
+| `<name>.audition-markers.csv` | `--export-markers` (includes `audition`) |
 | `batch-summary.json` | Batch mode |
 
 ### Key CLI flags
 
-`--out-dir` · `--config` · `--clean` · `--cut <pauses,clicks,breaths>` · `--crossfade-ms` · `--labels` · `-r/--recursive` · `--force` · `--dry-run` · `--no-pauses/--no-clicks/--no-breaths` · `--log-level` · `--log-file`
+`--out-dir` · `--config` · `--clean` · `--cut <pauses,clicks,breaths>` · `--crossfade-ms` · `--labels` · `--export-markers <all|csv,edl,...>` · `-r/--recursive` · `--force` · `--dry-run` · `--no-pauses/--no-clicks/--no-breaths` · `--log-level` · `--log-file`
 
 `--clean` attenuates artifacts in place (same length). `--cut` removes flagged regions and crossfades joins (shorter file).
 
@@ -111,7 +122,9 @@ Run: `.\build\audio_tool.exe` · `.\build\audio_tool_cli.exe help`
 
 The project site lives in [`docs/`](docs/) and is ready to deploy via [`.github/workflows/pages.yml`](.github/workflows/pages.yml).
 
-**First-time setup:** Repo → Settings → Pages → Build and deployment → Source: **GitHub Actions**, then run the **Deploy GitHub Pages** workflow manually. GitHub Pages must be supported for the repository visibility (public repo, or a plan that supports Pages for private repos).
+**First-time setup:** Repo → Settings → Pages → Build and deployment → Source: **GitHub Actions**. The site auto-deploys on pushes to `main` that touch `docs/`.
+
+**Branch safety:** Only you have admin access on the repo. To harden `main` further, enable branch protection in GitHub Settings → Branches (require the `build-test` CI check, block force pushes). A starter rules file lives in [`.github/branch-protection.json`](.github/branch-protection.json).
 
 ## Project layout
 
@@ -125,7 +138,7 @@ The project site lives in [`docs/`](docs/) and is ready to deploy via [`.github/
 | `presets/` | Example JSON detector presets |
 | `dist/` | Portable Windows build |
 | `ml/` | Future ML training / ONNX export |
-| `scripts/` | Synthetic fixture generator |
+| `scripts/` | Synthetic fixtures, QA batch runner, release packaging |
 
 ## License note
 

@@ -1,8 +1,11 @@
 name: Deploy GitHub Pages
 
 on:
-  # Manual until the repository is public or the account plan supports Pages
-  # for private repositories.
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 permissions:
@@ -26,8 +29,6 @@ jobs:
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
-        with:
-          enablement: true
 
       - name: Upload site
         uses: actions/upload-pages-artifact@v3

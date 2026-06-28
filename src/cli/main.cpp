@@ -2,6 +2,7 @@
 #include "audio_core/Editor.hpp"
 #include "audio_core/Formats.hpp"
 #include "audio_core/Logger.hpp"
+#include "audio_core/MarkerExports.hpp"
 #include "audio_core/Pipeline.hpp"
 
 #include <nlohmann/json.hpp>
@@ -20,7 +21,7 @@ using audio_core::Logger;
 
 namespace {
 
-constexpr const char* kVersion = "0.2.1";
+constexpr const char* kVersion = "0.3.0";
 
 const std::vector<std::string> kAudioExts = audio_core::SupportedFormats::input_extensions();
 
@@ -45,6 +46,8 @@ struct Options {
     bool cut_breaths = false;
     double crossfade_ms = 5.0;
     bool labels = false;
+    bool export_markers_all = false;
+    std::vector<audio_core::MarkerExportFormat> export_marker_formats;
 };
 
 void print_usage() {
@@ -66,6 +69,7 @@ void print_usage() {
         "                        Comma list of: pauses,clicks,breaths (e.g. --cut pauses,breaths)\n"
         "  --crossfade-ms <ms>   Crossfade length at cut joins (default: 5)\n"
         "  --labels              Write an Audacity label track (.labels.txt)\n"
+        "  --export-markers <list>  Export marker sidecars: all | csv,edl,fcpxml,reaper,audition,audacity\n"
         "  -r, --recursive       Recurse into subfolders (batch)\n"
         "  --force               Overwrite existing generated outputs\n"
         "  --dry-run             Show what would happen, write nothing\n"
@@ -81,6 +85,11 @@ void print_usage() {
         "  <name>.cleaned.wav    Cleaned audio (only with --clean)\n"
         "  <name>.edited.wav     Cut + re-stitched audio (only with --cut)\n"
         "  <name>.labels.txt     Audacity labels (only with --labels)\n"
+        "  <name>.markers.csv    Universal spreadsheet export\n"
+        "  <name>.markers.edl    CMX-style EDL for Resolve/Premiere\n"
+        "  <name>.markers.fcpxml FCP7 XML markers for Premiere/Audition\n"
+        "  <name>.reaper-markers.csv  Reaper marker/region CSV\n"
+        "  <name>.audition-markers.csv Adobe Audition marker CSV\n"
         "  batch-summary.json    Whole-run summary (batch)\n\n"
         "EXIT CODES: 0 ok, 1 partial failure, 2 bad args, 3 fatal\n";
 }
@@ -146,6 +155,14 @@ bool parse_args(int argc, char** argv, Options& opt, std::string& error) {
             opt.crossfade_ms = std::stod(need_value("--crossfade-ms"));
         } else if (a == "--labels") {
             opt.labels = true;
+        } else if (a == "--export-markers") {
+            const std::string formats = need_value("--export-markers");
+            if (formats == "all" || formats == "*") {
+                opt.export_markers_all = true;
+            } else {
+                const auto parsed = audio_core::parse_marker_export_formats(formats);
+                opt.export_marker_formats.insert(opt.export_marker_formats.end(), parsed.begin(), parsed.end());
+            }
         } else if (a == "-r" || a == "--recursive") {
             opt.recursive = true;
         } else if (a == "--force") {
@@ -265,6 +282,18 @@ FileOutcome process_file(const fs::path& input, const fs::path& out_dir,
         if (opt.labels) {
             result.markers.save_audacity_labels(labels_path.string());
             log.debug("wrote " + labels_path.string());
+        }
+
+        if (opt.export_markers_all) {
+            audio_core::export_all_marker_formats(out_dir.string(), stem, result.markers.all(),
+                                                  result.duration_sec, audio.sample_rate);
+            log.debug("wrote pro-editor marker sidecars for " + stem);
+        } else if (!opt.export_marker_formats.empty()) {
+            for (const auto fmt : opt.export_marker_formats) {
+                audio_core::export_markers(fmt, (out_dir / stem).string(), result.markers.all(),
+                                             result.duration_sec, audio.sample_rate);
+            }
+            log.debug("wrote selected marker exports for " + stem);
         }
 
         if (opt.clean) {

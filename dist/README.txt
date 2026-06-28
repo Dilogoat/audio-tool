@@ -41,7 +41,8 @@ USING IT
 3. Pan/zoom any graph (drag / scroll) - all graphs stay time-synced.
 4. Shift+Click a graph to move the playhead; press "Play" to listen.
 5. Use the sidebar to tune detector sensitivity and review markers.
-6. Export markers (JSON), labels, cleaned WAV, or edited (cut) WAV.
+6. Export markers (all pro-editor formats), labels, cleaned WAV, or edited (cut) WAV.
+7. Use Playback Source (Original / Cleaned / Edited) and double-click a marker to preview +/- 2s.
 
 MORE INFO
 ---------

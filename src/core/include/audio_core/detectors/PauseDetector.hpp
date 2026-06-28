@@ -8,8 +8,8 @@
 namespace audio_core {
 
 struct PauseDetectorConfig {
-    double rms_threshold = 0.01;
-    double min_duration_sec = 0.5;
+    double rms_threshold = 0.012;
+    double min_duration_sec = 0.6;
 };
 
 class PauseDetector {
