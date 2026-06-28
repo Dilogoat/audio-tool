@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Audio Tool — Cleanup &amp; Analysis for Voice Recordings</title>
+  <meta name="description" content="Native C++ desktop app and CLI for detecting breaths, clicks, and pauses in long-form voice recordings — with waveform visualization, batch processing, and surgical editing." />
+  <meta name="theme-color" content="#07080f" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=JetBrains+Mono:wght@400;500&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="mesh"></div>
+  <div class="noise"></div>
+
+  <header class="nav">
+    <div class="container nav-inner">
+      <a class="brand" href="#top">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M4 10v4h2l5 4V6L6 10H4zm9.5 1.5c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.74 2.5-2.26 2.5-4.02z"/></svg>
+        </span>
+        Audio Tool
+      </a>
+      <nav class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#formats">Formats</a>
+        <a href="#cli">CLI</a>
+        <a href="#docs">Docs</a>
+        <a class="btn btn-primary" href="https://github.com/Dilogoat/audio-tool/releases/latest" target="_blank" rel="noopener">Download v0.2.0</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="container hero-grid">
+        <div>
+          <div class="eyebrow"><span class="dot"></span> Native C++ · Windows x64 · GUI + CLI</div>
+          <h1>Find the noise.<br /><span class="gradient-text">Fix the take.</span></h1>
+          <p class="lead">
+            Audio Tool scans long-form voice recordings for breaths, mouth clicks, and dead air —
+            then shows you exactly where to work. Visualize, batch-process, attenuate, or surgically cut.
+            Your originals stay untouched.
+          </p>
+          <div class="hero-actions">
+            <a class="btn btn-primary" href="https://github.com/Dilogoat/audio-tool/releases/latest" target="_blank" rel="noopener">Get the portable build</a>
+            <a class="btn btn-secondary" href="https://github.com/Dilogoat/audio-tool" target="_blank" rel="noopener">View on GitHub</a>
+          </div>
+          <div class="stat-row">
+            <div class="stat"><strong>3</strong><span>artifact detectors</span></div>
+            <div class="stat"><strong>2</strong><span>apps (GUI + CLI)</span></div>
+            <div class="stat"><strong>0</strong><span>source overwrites</span></div>
+          </div>
+        </div>
+
+        <div class="hero-visual">
+          <div class="glass-card">
+            <div class="app-chrome">
+              <span></span><span></span><span></span>
+              <span class="app-title">audio_tool.exe — waveform + markers</span>
+            </div>
+            <div class="wave-wrap">
+              <canvas id="wave-canvas" aria-hidden="true"></canvas>
+            </div>
+            <div class="marker-legend">
+              <span class="legend-item"><span class="legend-swatch legend-pause"></span> Pause</span>
+              <span class="legend-item"><span class="legend-swatch legend-click"></span> Click</span>
+              <span class="legend-item"><span class="legend-swatch legend-breath"></span> Breath</span>
+            </div>
+          </div>
+          <div class="floating-badge">Composite score heatmap · Spectrogram overlay</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="features">
+      <div class="container">
+        <div class="section-head">
+          <h2>Built for podcasters, editors, and engineers</h2>
+          <p>Heuristic DSP today. ML-ready tomorrow. One shared pipeline powers both the desktop UI and headless batch runner.</p>
+        </div>
+        <div class="feature-grid">
+          <article class="feature-card">
+            <div class="feature-icon">◎</div>
+            <h3>Smart detection</h3>
+            <p>RMS pause finder, transient click detector, and spectral breath heuristics — each tuned for spoken word, not music mastering.</p>
+          </article>
+          <article class="feature-card">
+            <div class="feature-icon">▤</div>
+            <h3>Visual workflow</h3>
+            <p>Waveform, energy envelope, composite heatmap, and spectrogram — time-synced, zoomable, click-to-seek playback.</p>
+          </article>
+          <article class="feature-card">
+            <div class="feature-icon">⚡</div>
+            <h3>Batch CLI</h3>
+            <p>Process folders recursively with JSON presets, structured reports, leveled logging, and script-friendly exit codes.</p>
+          </article>
+          <article class="feature-card">
+            <div class="feature-icon">✂</div>
+            <h3>Surgical cuts</h3>
+            <p>Physically remove flagged regions and crossfade the joins — or attenuate in place. Export cleaned or edited WAVs.</p>
+          </article>
+          <article class="feature-card">
+            <div class="feature-icon">🏷</div>
+            <h3>DAW labels</h3>
+            <p>Export Audacity-compatible label tracks for manual polish in Audacity, Reaper, or your editor of choice.</p>
+          </article>
+          <article class="feature-card">
+            <div class="feature-icon">🛡</div>
+            <h3>Safe by design</h3>
+            <p>Outputs always land in a separate folder. The tool refuses to overwrite your source files — ever.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="formats">
+      <div class="container">
+        <div class="section-head">
+          <h2>Open almost anything. Export lossless.</h2>
+          <p>Import common podcast and post-production formats via libsndfile. Analysis outputs are always high-quality WAV — your masters stay safe.</p>
+          <div class="format-strip">
+            <span class="format-pill highlight">MP3</span>
+            <span class="format-pill">WAV</span>
+            <span class="format-pill">FLAC</span>
+            <span class="format-pill">OGG</span>
+            <span class="format-pill">Opus</span>
+            <span class="format-pill">AIFF</span>
+            <span class="format-pill">CAF</span>
+            <span class="format-pill">W64</span>
+          </div>
+        </div>
+
+        <div class="pipeline">
+          <div class="pipe-step"><strong>Load</strong><span>WAV · MP3 · FLAC · OGG · Opus · AIFF</span></div>
+          <div class="pipe-step"><strong>Analyze</strong><span>Pauses · clicks · breaths</span></div>
+          <div class="pipe-step"><strong>Score</strong><span>Weighted heatmap timeline</span></div>
+          <div class="pipe-step"><strong>Remediate</strong><span>Attenuate or cut + crossfade</span></div>
+          <div class="pipe-step"><strong>Export</strong><span>Markers · labels · WAV</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="cli">
+      <div class="container">
+        <div class="section-head">
+          <h2>Automate the boring parts</h2>
+          <p>The CLI shares the exact same DSP core as the GUI. Pipe it into your ingest workflow.</p>
+        </div>
+        <div class="terminal-grid">
+          <div class="terminal">
+            <div class="terminal-bar">
+              <span>analyze — single file</span>
+              <button class="copy-btn" data-copy="#cmd-analyze" type="button">Copy</button>
+            </div>
+            <pre id="cmd-analyze"><span class="tok-cmd">audio_tool_cli</span> <span class="tok-flag">analyze</span> <span class="tok-path">"D:\recordings\episode.mp3"</span> <span class="tok-flag">--labels</span>
+<span class="tok-out">→ episode.markers.json</span>
+<span class="tok-out">→ episode.report.json</span>
+<span class="tok-out">→ episode.labels.txt</span></pre>
+          </div>
+          <div class="terminal">
+            <div class="terminal-bar">
+              <span>batch — folder + cut</span>
+              <button class="copy-btn" data-copy="#cmd-batch" type="button">Copy</button>
+            </div>
+            <pre id="cmd-batch"><span class="tok-cmd">audio_tool_cli</span> <span class="tok-flag">batch</span> <span class="tok-path">"D:\recordings"</span> \
+  <span class="tok-flag">--out-dir</span> <span class="tok-path">"D:\out"</span> \
+  <span class="tok-flag">--cut</span> pauses,breaths <span class="tok-flag">-r</span> <span class="tok-flag">--force</span>
+<span class="tok-out">→ &lt;name&gt;.edited.wav per file</span>
+<span class="tok-out">→ batch-summary.json</span></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="docs">
+      <div class="container">
+        <div class="section-head">
+          <h2>Documentation</h2>
+          <p>Everything you need to run, configure, and extend the tool.</p>
+        </div>
+        <div class="docs-grid">
+          <article class="doc-card">
+            <h3>Quick start</h3>
+            <ul>
+              <li>Download the portable zip from <a href="https://github.com/Dilogoat/audio-tool/releases/latest">Releases</a></li>
+              <li>Keep all DLLs next to the EXE files</li>
+              <li>Run <code>audio_tool.exe</code> or <code>audio_tool_cli.exe help</code></li>
+              <li>Open WAV, MP3, FLAC, OGG, Opus, or AIFF — analyze — export</li>
+            </ul>
+          </article>
+          <article class="doc-card">
+            <h3>CLI outputs</h3>
+            <ul>
+              <li><code>&lt;name&gt;.markers.json</code> — event timeline</li>
+              <li><code>&lt;name&gt;.report.json</code> — per-file summary</li>
+              <li><code>&lt;name&gt;.cleaned.wav</code> — with <code>--clean</code></li>
+              <li><code>&lt;name&gt;.edited.wav</code> — with <code>--cut</code></li>
+              <li><code>&lt;name&gt;.labels.txt</code> — with <code>--labels</code></li>
+            </ul>
+          </article>
+          <article class="doc-card">
+            <h3>Presets</h3>
+            <ul>
+              <li><code>audio_tool_cli init-config mypreset.json</code></li>
+              <li>Edit detector thresholds, weights, and clean settings</li>
+              <li>Pass <code>--config presets\podcast.json</code> to batch runs</li>
+            </ul>
+          </article>
+          <article class="doc-card">
+            <h3>Build from source</h3>
+            <ul>
+              <li>MSVC 2022, CMake 3.24+, Ninja, vcpkg manifest mode</li>
+              <li><code>cmake --preset default && cmake --build --preset default</code></li>
+              <li>21 unit tests via <code>ctest --preset default</code></li>
+              <li>Full instructions in the <a href="https://github.com/Dilogoat/audio-tool/blob/main/README.md">README</a></li>
+            </ul>
+          </article>
+        </div>
+
+        <div class="cta">
+          <h2>Ready to clean up your backlog?</h2>
+          <p>Grab the latest Windows x64 build — no installer, no source overwrites, no nonsense.</p>
+          <a class="btn btn-primary" href="https://github.com/Dilogoat/audio-tool/releases/latest" target="_blank" rel="noopener">Download latest release</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="container footer-inner">
+      <span>Audio Tool · Native voice cleanup &amp; analysis</span>
+      <span>
+        <a href="https://github.com/Dilogoat/audio-tool">Repository</a>
+        ·
+        <a href="https://github.com/Dilogoat/audio-tool/blob/main/README.md">README</a>
+        ·
+        <a href="https://github.com/Dilogoat/audio-tool/releases">Releases</a>
+      </span>
+    </div>
+  </footer>
+
+  <script src="assets/main.js"></script>
+</body>
+</html>

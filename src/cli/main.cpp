@@ -1,5 +1,6 @@
 #include "audio_core/AudioFile.hpp"
 #include "audio_core/Editor.hpp"
+#include "audio_core/Formats.hpp"
 #include "audio_core/Logger.hpp"
 #include "audio_core/Pipeline.hpp"
 
@@ -21,7 +22,7 @@ namespace {
 
 constexpr const char* kVersion = "0.2.0";
 
-const std::vector<std::string> kAudioExts = {".wav", ".flac", ".ogg", ".aiff", ".aif"};
+const std::vector<std::string> kAudioExts = audio_core::SupportedFormats::input_extensions();
 
 struct Options {
     std::string command;

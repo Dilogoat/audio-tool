@@ -1,8 +1,11 @@
 {
   "name": "audio-tool",
-  "version-string": "0.1.0",
+  "version-string": "0.2.0",
   "dependencies": [
-    "libsndfile",
+    {
+      "name": "libsndfile",
+      "features": ["external-libs", "mpeg"]
+    },
     "fftw3",
     "eigen3",
     "glfw3",

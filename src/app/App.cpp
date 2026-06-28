@@ -1,5 +1,7 @@
 #include "App.hpp"
 
+#include "audio_core/Formats.hpp"
+
 #include <GLFW/glfw3.h>
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
@@ -41,9 +43,10 @@ std::string run_file_dialog(bool save) {
 
         OPENFILENAMEA ofn{};
         ofn.lStructSize = sizeof(ofn);
+        static const std::string open_filter = audio_core::SupportedFormats::win32_open_filter();
         ofn.lpstrFilter = save
             ? "WAV Files (*.wav)\0*.wav\0All Files (*.*)\0*.*\0\0"
-            : "Audio Files (*.wav;*.flac;*.ogg;*.aiff)\0*.wav;*.flac;*.ogg;*.aiff\0All Files (*.*)\0*.*\0\0";
+            : open_filter.c_str();
         ofn.nFilterIndex = 1;
         ofn.lpstrFile = filename;
         ofn.nMaxFile = MAX_PATH;
@@ -514,7 +517,7 @@ void App::render_plots(const UiSnapshot& snap) {
                                    ImGui::GetCursorPosY() + avail.y * 0.5f - 20));
         ImGui::BeginGroup();
         ImGui::TextDisabled("Open an audio file to begin.");
-        ImGui::TextDisabled("WAV / FLAC / OGG / AIFF supported.");
+        ImGui::TextDisabled("%s supported.", audio_core::SupportedFormats::display_list().c_str());
         ImGui::EndGroup();
         return;
     }

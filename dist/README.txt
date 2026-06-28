@@ -7,6 +7,13 @@ WHAT'S INCLUDED
 - audio_tool_cli.exe  Command-line tool for batch processing
 - presets\            Example detector presets
 
+SUPPORTED FORMATS (OPEN)
+------------------------
+WAV, MP3, FLAC, OGG, Opus, AIFF, CAF, W64
+
+Exports are lossless WAV plus JSON / label sidecars.
+Your original files are never modified.
+
 HOW TO RUN (GUI)
 ----------------
 1. Keep all files in this folder together (the .dll files must stay
@@ -20,8 +27,8 @@ HOW TO RUN (CLI / BULK)
 -----------------------
 Open a terminal in this folder, then e.g.:
 
-  audio_tool_cli.exe analyze "C:\path\to\file.wav"
-  audio_tool_cli.exe batch "C:\path\to\folder" --out-dir out --clean -r
+  audio_tool_cli.exe analyze "C:\path\to\episode.mp3"
+  audio_tool_cli.exe batch "C:\path\to\folder" --out-dir out --cut pauses -r
   audio_tool_cli.exe help
 
 The CLI never modifies your source files - results go to a separate
@@ -29,17 +36,19 @@ output folder (default: <input>\audio-tool-out).
 
 USING IT
 --------
-1. Click "Open" and choose a WAV / FLAC / OGG / AIFF file.
+1. Click "Open" and choose WAV, MP3, FLAC, OGG, Opus, or AIFF.
 2. Click "Analyze" to detect pauses, clicks, and breaths.
 3. Pan/zoom any graph (drag / scroll) - all graphs stay time-synced.
 4. Shift+Click a graph to move the playhead; press "Play" to listen.
 5. Use the sidebar to tune detector sensitivity and review markers.
-6. Export markers (JSON) or a cleaned WAV from the toolbar.
+6. Export markers (JSON), labels, cleaned WAV, or edited (cut) WAV.
+
+MORE INFO
+---------
+Project site: https://dilogoat.github.io/audio-tool/
+Source + docs: see the GitHub repository README.
 
 REQUIREMENTS
 ------------
 - 64-bit Windows 10 or 11.
 - No installation required.
-
-This is a portable build. Source code and build instructions live in
-the project repository.

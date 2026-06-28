@@ -12,6 +12,7 @@ endif()
 # Core library
 add_library(audio_core STATIC
     src/core/AudioFile.cpp
+    src/core/Formats.cpp
     src/core/RmsAnalyzer.cpp
     src/core/Framing.cpp
     src/core/Stft.cpp
@@ -91,6 +92,7 @@ add_executable(audio_tests
     tests/unit/test_markers.cpp
     tests/unit/test_composite.cpp
     tests/unit/test_audio_file.cpp
+    tests/unit/test_formats.cpp
     tests/unit/test_pipeline.cpp
     tests/unit/test_editor.cpp
 )
