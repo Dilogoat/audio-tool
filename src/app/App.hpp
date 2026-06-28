@@ -3,6 +3,7 @@
 #include "audio_core/AudioFile.hpp"
 #include "audio_core/CompositeScore.hpp"
 #include "audio_core/Markers.hpp"
+#include "audio_core/Pipeline.hpp"
 #include "audio_core/RmsAnalyzer.hpp"
 #include "audio_core/SpectralCleaner.hpp"
 #include "audio_core/Stft.hpp"

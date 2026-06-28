@@ -41,6 +41,43 @@ Run the app:
 .\build\audio_tool.exe
 ```
 
+## Command-line interface (batch processing)
+
+`audio_tool_cli` is a headless build that shares the exact same DSP pipeline as
+the GUI. It never modifies source files - all results are written to a separate
+output folder.
+
+```powershell
+# Analyze a single file (outputs to <input_dir>/audio-tool-out)
+audio_tool_cli analyze "D:\recordings\episode.wav"
+
+# Bulk-process a folder, also writing cleaned WAVs
+audio_tool_cli batch "D:\recordings" --out-dir "D:\out" --clean --recursive
+
+# Use a saved preset, markers only
+audio_tool_cli batch "D:\recordings" --config presets\podcast.json
+
+# Write a default config you can edit
+audio_tool_cli init-config mypreset.json
+
+# See everything
+audio_tool_cli help
+```
+
+Per input `<name>.<ext>` the CLI writes (into the output folder, never over the
+source):
+
+- `<name>.markers.json` - detected events timeline
+- `<name>.report.json` - per-file summary (duration, counts, peak score)
+- `<name>.cleaned.wav` - cleaned audio (only with `--clean`)
+- `batch-summary.json` - whole-run summary (batch mode)
+
+Key options: `--out-dir`, `--config`, `--clean`, `-r/--recursive`, `--force`
+(overwrite previous outputs), `--dry-run`, `--no-pauses/--no-clicks/--no-breaths`,
+`--log-level <error|warn|info|debug>`, `--log-file <path>`.
+
+Exit codes: `0` ok, `1` partial failure, `2` bad args, `3` fatal.
+
 ## Download / run (no build required)
 
 A portable Windows x64 build is in the [`dist/`](dist/) folder. Download the

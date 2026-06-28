@@ -18,6 +18,8 @@ add_library(audio_core STATIC
     src/core/Markers.cpp
     src/core/CompositeScore.cpp
     src/core/SpectralCleaner.cpp
+    src/core/Logger.cpp
+    src/core/Pipeline.cpp
     src/core/detectors/PauseDetector.cpp
     src/core/detectors/TransientDetector.cpp
     src/core/detectors/BreathDetector.cpp
@@ -65,6 +67,16 @@ if(WIN32)
     target_link_libraries(audio_tool PRIVATE opengl32)
 endif()
 
+# Headless CLI (no GUI dependencies)
+add_executable(audio_tool_cli
+    src/cli/main.cpp
+)
+
+target_link_libraries(audio_tool_cli PRIVATE
+    audio_core
+    nlohmann_json::nlohmann_json
+)
+
 # Unit tests
 enable_testing()
 find_package(Catch2 CONFIG REQUIRED)
@@ -78,6 +90,7 @@ add_executable(audio_tests
     tests/unit/test_markers.cpp
     tests/unit/test_composite.cpp
     tests/unit/test_audio_file.cpp
+    tests/unit/test_pipeline.cpp
 )
 
 target_compile_definitions(audio_tests PRIVATE TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures")

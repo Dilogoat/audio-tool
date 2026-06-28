@@ -1,14 +1,31 @@
 Audio Cleanup & Analysis Tool - Portable Build (Windows x64)
 ============================================================
 
-HOW TO RUN
-----------
+WHAT'S INCLUDED
+---------------
+- audio_tool.exe      Desktop GUI (visual analysis + cleanup)
+- audio_tool_cli.exe  Command-line tool for batch processing
+- presets\            Example detector presets
+
+HOW TO RUN (GUI)
+----------------
 1. Keep all files in this folder together (the .dll files must stay
-   next to audio_tool.exe).
+   next to the .exe files).
 2. Double-click audio_tool.exe.
 
 If Windows SmartScreen warns about an unrecognized app, click
 "More info" -> "Run anyway" (the app is unsigned).
+
+HOW TO RUN (CLI / BULK)
+-----------------------
+Open a terminal in this folder, then e.g.:
+
+  audio_tool_cli.exe analyze "C:\path\to\file.wav"
+  audio_tool_cli.exe batch "C:\path\to\folder" --out-dir out --clean -r
+  audio_tool_cli.exe help
+
+The CLI never modifies your source files - results go to a separate
+output folder (default: <input>\audio-tool-out).
 
 USING IT
 --------

@@ -1,0 +1,35 @@
+{
+  "detect": {
+    "pauses": true,
+    "clicks": true,
+    "breaths": true
+  },
+  "pause": {
+    "rms_threshold": 0.012,
+    "min_duration_sec": 0.6
+  },
+  "transient": {
+    "window_ms": 5,
+    "spike_ratio": 4.5,
+    "min_local_rms": 0.005,
+    "max_duration_sec": 0.03
+  },
+  "breath": {
+    "speech_rms_threshold": 0.03,
+    "hf_ratio_threshold": 0.55,
+    "min_duration_sec": 0.08,
+    "max_duration_sec": 1.5,
+    "fft_size": 2048,
+    "hop_size": 512
+  },
+  "score": {
+    "click_weight": 0.8,
+    "breath_weight": 0.5,
+    "pause_weight": 0.2,
+    "frame_duration_sec": 0.05
+  },
+  "clean": {
+    "attenuation": 0.15,
+    "speech_floor_db": -40.0
+  }
+}

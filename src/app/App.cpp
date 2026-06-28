@@ -227,36 +227,31 @@ void App::run_analysis() {
             local_audio = audio_;
         }
 
-        audio_core::PauseDetector pause(pause_cfg_);
-        audio_core::TransientDetector trans(transient_cfg_);
-        audio_core::BreathDetector breath(breath_cfg_);
+        // Shared detection path (identical to the CLI).
+        audio_core::PipelineConfig cfg;
+        cfg.pause = pause_cfg_;
+        cfg.transient = transient_cfg_;
+        cfg.breath = breath_cfg_;
+        cfg.score = score_cfg_;
+        cfg.clean = clean_cfg_;
+        audio_core::Pipeline pipeline(cfg);
+        auto result = pipeline.analyze(local_audio, true);
 
-        audio_core::Markers result;
-        result.merge(pause.detect(local_audio.samples, local_audio.sample_rate));
-        result.merge(trans.detect(local_audio.samples, local_audio.sample_rate));
-        result.merge(breath.detect(local_audio.samples, local_audio.sample_rate));
-
+        // RMS envelope and spectrogram are computed here for display only.
         audio_core::RmsAnalyzer rms(local_audio.sample_rate, local_audio.sample_rate / 20,
                                     local_audio.sample_rate / 40);
         const auto rms_data = rms.analyze(local_audio.samples);
 
-        const double duration = static_cast<double>(local_audio.samples.size()) / local_audio.sample_rate;
-        audio_core::CompositeScore scorer(score_cfg_);
-        const auto scores = scorer.compute(result.all(), duration);
-
         audio_core::Stft stft(local_audio.sample_rate, 2048, 512);
         const auto spec = stft.forward(local_audio.samples);
 
-        audio_core::SpectralCleaner cleaner;
-        const auto cleaned = cleaner.clean(local_audio.samples, local_audio.sample_rate, result.all(), clean_cfg_);
-
         {
             std::lock_guard<std::mutex> lock(data_mutex_);
-            markers_ = std::move(result);
+            markers_ = std::move(result.markers);
             rms_frames_ = std::move(rms_data);
-            score_frames_ = std::move(scores);
+            score_frames_ = std::move(result.scores);
             spectrogram_ = std::move(spec);
-            cleaned_audio_ = std::move(cleaned);
+            cleaned_audio_ = std::move(result.cleaned);
         }
 
         analyzing_ = false;
