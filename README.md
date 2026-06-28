@@ -2,11 +2,11 @@
 
 [![Release](https://img.shields.io/github/v/release/Dilogoat/audio-tool?style=flat-square)](https://github.com/Dilogoat/audio-tool/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/Dilogoat/audio-tool/ci.yml?branch=main&style=flat-square)](https://github.com/Dilogoat/audio-tool/actions)
-[![Pages](https://img.shields.io/badge/docs-GitHub%20Pages-6ee7ff?style=flat-square)](https://dilogoat.github.io/audio-tool/)
+[![Site source](https://img.shields.io/badge/site-source%20in%20docs%2F-6ee7ff?style=flat-square)](docs/)
 
 Native C++ desktop application and CLI for detecting non-speech artifacts in long-form voice recordings — breaths, mouth clicks, and long pauses — with waveform visualization, batch processing, and surgical editing.
 
-**Project site:** [dilogoat.github.io/audio-tool](https://dilogoat.github.io/audio-tool/)
+**Project site source:** [`docs/`](docs/) contains the polished landing page. GitHub Pages can publish it once the repository is public or the account plan supports Pages for private repositories.
 
 ## Features
 
@@ -109,9 +109,9 @@ Run: `.\build\audio_tool.exe` · `.\build\audio_tool_cli.exe help`
 
 ## GitHub Pages
 
-The project site lives in [`docs/`](docs/) and deploys automatically on push to `main` via [`.github/workflows/pages.yml`](.github/workflows/pages.yml).
+The project site lives in [`docs/`](docs/) and is ready to deploy via [`.github/workflows/pages.yml`](.github/workflows/pages.yml).
 
-**First-time setup:** Repo → Settings → Pages → Build and deployment → Source: **GitHub Actions**.
+**First-time setup:** Repo → Settings → Pages → Build and deployment → Source: **GitHub Actions**, then run the **Deploy GitHub Pages** workflow manually. GitHub Pages must be supported for the repository visibility (public repo, or a plan that supports Pages for private repos).
 
 ## Project layout
 

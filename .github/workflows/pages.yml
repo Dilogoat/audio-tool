@@ -1,11 +1,8 @@
 name: Deploy GitHub Pages
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "docs/**"
-      - ".github/workflows/pages.yml"
+  # Manual until the repository is public or the account plan supports Pages
+  # for private repositories.
   workflow_dispatch:
 
 permissions:
