@@ -20,7 +20,7 @@ using audio_core::Logger;
 
 namespace {
 
-constexpr const char* kVersion = "0.2.0";
+constexpr const char* kVersion = "0.2.1";
 
 const std::vector<std::string> kAudioExts = audio_core::SupportedFormats::input_extensions();
 
