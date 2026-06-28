@@ -28,6 +28,9 @@ jobs:
         run: |
           choco install cmake ninja -y
 
+      - name: Generate test fixtures
+        run: python scripts/gen_fixtures.py
+
       - name: Configure
         run: cmake --preset default
 
