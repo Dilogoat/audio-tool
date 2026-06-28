@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Audio Cleanup &amp; Analysis Tool — Overview</title>
+<style>
+  /* ============================================================
+     Print-optimized for A4. Open in a browser and use
+     Ctrl/Cmd + P → "Save as PDF". Set margins to "Default" and
+     enable "Background graphics".
+     ============================================================ */
+
+  :root {
+    --ink:        #1b2030;
+    --ink-soft:   #44506a;
+    --ink-faint:  #7c8aa6;
+    --line:       #e3e8f2;
+    --paper:      #ffffff;
+    --panel:      #f6f8fc;
+    --brand:      #5b6ee8;   /* indigo */
+    --brand-deep: #2b2f6b;
+    --teal:       #1fb6a6;
+    --pause:      #3aa0ff;   /* blue   */
+    --click:      #ff5a5a;   /* red    */
+    --breath:     #f5b324;   /* amber  */
+  }
+
+  @page {
+    size: A4;
+    margin: 16mm 0 16mm 0;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #5b6072;
+    color: var(--ink);
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    font-size: 10.7px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* The page sheet. On screen it looks like paper; in print it is the page. */
+  .sheet {
+    width: 210mm;
+    min-height: 297mm;
+    margin: 10mm auto;
+    background: var(--paper);
+    padding: 0 18mm;
+    box-shadow: 0 8px 40px rgba(0,0,0,.35);
+    position: relative;
+  }
+
+  @media print {
+    html, body { background: #fff; }
+    .sheet {
+      width: auto;
+      margin: 0;
+      min-height: 0;
+      box-shadow: none;
+      padding: 0 18mm;
+    }
+    .page-break { break-before: page; }
+    .no-break { break-inside: avoid; }
+  }
+
+  .page-break { break-before: page; }
+  .no-break   { break-inside: avoid; }
+
+  h1, h2, h3, h4 { margin: 0; font-weight: 700; color: var(--ink); letter-spacing: -0.01em; }
+
+  p { margin: 0 0 8px 0; }
+
+  a { color: var(--brand); text-decoration: none; }
+
+  code, .mono {
+    font-family: "Cascadia Code", "SF Mono", Consolas, "Liberation Mono", monospace;
+    font-size: 0.92em;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 1px 5px;
+    color: var(--brand-deep);
+  }
+
+  /* ---------- Cover ---------- */
+  .cover {
+    margin: 0 -18mm;
+    padding: 30mm 18mm 16mm 18mm;
+    background:
+      radial-gradient(120% 90% at 100% 0%, rgba(31,182,166,.20), transparent 55%),
+      radial-gradient(120% 90% at 0% 100%, rgba(91,110,232,.22), transparent 55%),
+      linear-gradient(135deg, #1b2030 0%, #2b2f6b 100%);
+    color: #fff;
+  }
+  .cover .eyebrow {
+    text-transform: uppercase;
+    letter-spacing: .32em;
+    font-size: 10px;
+    font-weight: 600;
+    color: #aeb8ff;
+    margin-bottom: 14px;
+  }
+  .cover h1 {
+    color: #fff;
+    font-size: 34px;
+    line-height: 1.1;
+    margin-bottom: 12px;
+  }
+  .cover .lede {
+    font-size: 13px;
+    color: #d7ddf2;
+    max-width: 150mm;
+    margin-bottom: 26px;
+  }
+  .cover .waveband {
+    display: flex;
+    align-items: flex-end;
+    gap: 3px;
+    height: 46px;
+    margin-bottom: 4px;
+    opacity: .9;
+  }
+  .cover .waveband span {
+    flex: 1;
+    background: linear-gradient(180deg, #7d8cff, #1fb6a6);
+    border-radius: 2px;
+  }
+  .pillrow { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 22px; }
+  .pill {
+    border: 1px solid rgba(255,255,255,.28);
+    border-radius: 999px;
+    padding: 5px 13px;
+    font-size: 10px;
+    color: #e8ecff;
+    background: rgba(255,255,255,.06);
+  }
+
+  /* ---------- Section scaffolding ---------- */
+  .section { padding-top: 16px; }
+  .section-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+    padding-bottom: 7px;
+    border-bottom: 2px solid var(--line);
+  }
+  .section-head .num {
+    font-size: 11px;
+    font-weight: 700;
+    color: #fff;
+    background: var(--brand);
+    width: 22px; height: 22px;
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+  }
+  .section-head h2 { font-size: 16px; }
+  .section-head .tag {
+    margin-left: auto;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: .14em;
+    color: var(--ink-faint);
+  }
+
+  .lead-para { color: var(--ink-soft); font-size: 11px; margin-bottom: 12px; }
+
+  /* ---------- Grid / cards ---------- */
+  .grid { display: grid; gap: 10px; }
+  .grid-2 { grid-template-columns: 1fr 1fr; }
+  .grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+
+  .card {
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    padding: 12px 13px;
+    background: var(--paper);
+  }
+  .card.tint { background: var(--panel); }
+  .card h3 { font-size: 11.5px; margin-bottom: 5px; }
+  .card p  { font-size: 10.2px; color: var(--ink-soft); margin: 0; }
+
+  .feat { display: flex; gap: 10px; align-items: flex-start; }
+  .feat .dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    margin-top: 4px; flex: 0 0 auto;
+    box-shadow: 0 0 0 3px rgba(0,0,0,.04);
+  }
+
+  /* Detector blocks */
+  .det {
+    border: 1px solid var(--line);
+    border-left-width: 4px;
+    border-radius: 8px;
+    padding: 11px 13px;
+    margin-bottom: 9px;
+    background: var(--paper);
+  }
+  .det.pause  { border-left-color: var(--pause); }
+  .det.click  { border-left-color: var(--click); }
+  .det.breath { border-left-color: var(--breath); }
+  .det .det-top { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+  .det .det-top h3 { font-size: 12px; }
+  .det .chip {
+    font-size: 9px; font-weight: 600;
+    padding: 1px 7px; border-radius: 999px; color: #fff;
+  }
+  .chip.pause  { background: var(--pause); }
+  .chip.click  { background: var(--click); }
+  .chip.breath { background: #d9920a; }
+  .det p { font-size: 10.2px; color: var(--ink-soft); margin: 0 0 5px 0; }
+  .det .params { font-size: 9.4px; color: var(--ink-faint); }
+  .det .params b { color: var(--ink); font-weight: 600; }
+
+  /* Table */
+  table { width: 100%; border-collapse: collapse; font-size: 9.8px; }
+  thead th {
+    text-align: left;
+    background: var(--brand-deep);
+    color: #fff;
+    padding: 7px 9px;
+    font-weight: 600;
+    letter-spacing: .02em;
+  }
+  thead th:first-child { border-radius: 6px 0 0 0; }
+  thead th:last-child  { border-radius: 0 6px 0 0; }
+  tbody td { padding: 6px 9px; border-bottom: 1px solid var(--line); color: var(--ink-soft); vertical-align: top; }
+  tbody tr:nth-child(even) td { background: var(--panel); }
+  tbody td b { color: var(--ink); }
+
+  /* Workflow steps */
+  .steps { counter-reset: step; display: grid; gap: 8px; }
+  .step {
+    display: flex; gap: 11px; align-items: flex-start;
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+    background: var(--paper);
+  }
+  .step::before {
+    counter-increment: step;
+    content: counter(step);
+    flex: 0 0 auto;
+    width: 24px; height: 24px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--brand), var(--teal));
+    color: #fff; font-weight: 700; font-size: 11px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .step h3 { font-size: 11px; margin-bottom: 2px; }
+  .step p  { font-size: 10px; color: var(--ink-soft); margin: 0; }
+
+  /* Callout */
+  .callout {
+    border: 1px solid #ffe2b0;
+    background: #fff8ec;
+    border-radius: 8px;
+    padding: 11px 13px;
+    font-size: 10px;
+    color: #7a5410;
+  }
+  .callout b { color: #5e4109; }
+  .callout.info { border-color: #c9d6ff; background: #f1f5ff; color: #2f3c6b; }
+  .callout.info b { color: #1f2a55; }
+
+  ul.tick { list-style: none; padding: 0; margin: 0; }
+  ul.tick li { position: relative; padding-left: 18px; margin-bottom: 5px; font-size: 10.2px; color: var(--ink-soft); }
+  ul.tick li::before {
+    content: "";
+    position: absolute; left: 0; top: 5px;
+    width: 8px; height: 8px; border-radius: 2px;
+    background: var(--teal);
+  }
+
+  .muted { color: var(--ink-faint); }
+  .small { font-size: 9.2px; }
+
+  /* Footer line on each conceptual page */
+  .pagefoot {
+    margin-top: 18px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+    display: flex; justify-content: space-between;
+    font-size: 8.6px; color: var(--ink-faint);
+    letter-spacing: .03em;
+  }
+</style>
+</head>
+<body>
+
+<!-- ============================ SHEET 1 ============================ -->
+<div class="sheet">
+
+  <header class="cover no-break">
+    <div class="eyebrow">Voice &amp; Spoken-Word Post-Production</div>
+    <h1>Audio Cleanup &amp; Analysis Tool</h1>
+    <p class="lede">
+      A native desktop application that listens through long-form voice recordings, flags the
+      non-speech events that slow down an edit — pauses, mouth clicks &amp; plosives, and audible
+      breaths — and turns them into actionable, exportable markers with a one-click cleanup preview.
+    </p>
+
+    <div class="waveband" aria-hidden="true">
+      <!-- decorative pseudo-waveform -->
+      <span style="height:30%"></span><span style="height:55%"></span><span style="height:80%"></span>
+      <span style="height:48%"></span><span style="height:92%"></span><span style="height:66%"></span>
+      <span style="height:38%"></span><span style="height:74%"></span><span style="height:100%"></span>
+      <span style="height:52%"></span><span style="height:28%"></span><span style="height:61%"></span>
+      <span style="height:85%"></span><span style="height:44%"></span><span style="height:70%"></span>
+      <span style="height:33%"></span><span style="height:58%"></span><span style="height:90%"></span>
+      <span style="height:47%"></span><span style="height:25%"></span><span style="height:63%"></span>
+      <span style="height:78%"></span><span style="height:41%"></span><span style="height:69%"></span>
+      <span style="height:96%"></span><span style="height:50%"></span><span style="height:34%"></span>
+      <span style="height:72%"></span><span style="height:45%"></span><span style="height:88%"></span>
+    </div>
+
+    <div class="pillrow">
+      <span class="pill">Pause detection</span>
+      <span class="pill">Click / plosive detection</span>
+      <span class="pill">Breath detection</span>
+      <span class="pill">Composite heatmap</span>
+      <span class="pill">Spectrogram view</span>
+      <span class="pill">JSON marker export</span>
+      <span class="pill">Cleaned WAV export</span>
+    </div>
+  </header>
+
+  <!-- 1. What it is -->
+  <section class="section no-break">
+    <div class="section-head">
+      <span class="num">1</span>
+      <h2>What the tool does</h2>
+      <span class="tag">Overview</span>
+    </div>
+    <p class="lead-para">
+      Editing a one-hour interview, audiobook chapter, or voiceover by ear means scrubbing for the
+      same handful of recurring problems over and over. This tool does that pass for you. It analyses
+      a recording offline, marks every region that an editor would normally hunt for, and lets you
+      audition a cleaned version before committing anything to disk. You stay in control: nothing is
+      altered destructively, and every decision is exposed as a tunable threshold.
+    </p>
+
+    <div class="grid grid-3">
+      <div class="card tint no-break">
+        <h3>Hear less, edit faster</h3>
+        <p>Three detectors run in parallel and place colour-coded markers directly on the waveform, so the work is to review — not to find.</p>
+      </div>
+      <div class="card tint no-break">
+        <h3>Decisions stay yours</h3>
+        <p>Every threshold is a live slider. The tool proposes; you confirm. Markers and cleaned audio are only written when you export them.</p>
+      </div>
+      <div class="card tint no-break">
+        <h3>Fits your pipeline</h3>
+        <p>Markers export to plain JSON for use in other tools, and cleanup is rendered to a standard WAV you can drop straight into a session.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2. Key features -->
+  <section class="section">
+    <div class="section-head">
+      <span class="num">2</span>
+      <h2>At a glance</h2>
+      <span class="tag">Feature map</span>
+    </div>
+
+    <div class="grid grid-2">
+      <div class="feat no-break"><span class="dot" style="background:var(--pause)"></span>
+        <div><h3 style="font-size:11px">Pause detection</h3>
+        <p class="small muted">Finds extended low-energy gaps between phrases using an RMS energy envelope — the dead air you would tighten or cut.</p></div>
+      </div>
+      <div class="feat no-break"><span class="dot" style="background:var(--click)"></span>
+        <div><h3 style="font-size:11px">Click &amp; plosive detection</h3>
+        <p class="small muted">Catches short, sharp energy spikes — mouth clicks, lip smacks, and hard plosives that pop above their surroundings.</p></div>
+      </div>
+      <div class="feat no-break"><span class="dot" style="background:var(--breath)"></span>
+        <div><h3 style="font-size:11px">Breath detection</h3>
+        <p class="small muted">Identifies quiet, high-frequency-dominant moments between words that read as audible inhales.</p></div>
+      </div>
+      <div class="feat no-break"><span class="dot" style="background:var(--teal)"></span>
+        <div><h3 style="font-size:11px">Composite score heatmap</h3>
+        <p class="small muted">Blends all three detectors into a single "how much attention does this moment need" curve across the timeline.</p></div>
+      </div>
+      <div class="feat no-break"><span class="dot" style="background:var(--brand)"></span>
+        <div><h3 style="font-size:11px">Waveform + spectrogram</h3>
+        <p class="small muted">A scrollable waveform with marker overlays, an RMS envelope, and a log-magnitude spectrogram for visual confirmation.</p></div>
+      </div>
+      <div class="feat no-break"><span class="dot" style="background:var(--brand-deep)"></span>
+        <div><h3 style="font-size:11px">Preview, then export</h3>
+        <p class="small muted">Audition a spectral-attenuation cleanup in place, then export markers (JSON) and/or a cleaned mono WAV.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="pagefoot">
+    <span>Audio Cleanup &amp; Analysis Tool</span>
+    <span>Product Overview · Page 1</span>
+  </div>
+</div>
+
+<!-- ============================ SHEET 2 ============================ -->
+<div class="sheet page-break">
+
+  <!-- 3. How detection works -->
+  <section class="section">
+    <div class="section-head">
+      <span class="num">3</span>
+      <h2>How each detector listens</h2>
+      <span class="tag">The audio reasoning</span>
+    </div>
+    <p class="lead-para">
+      No black boxes. Each detector uses a transparent, physically intuitive measurement, with
+      defaults tuned for spoken word. The values below are the shipping defaults — all are adjustable
+      live while you watch the markers update.
+    </p>
+
+    <div class="det pause no-break">
+      <div class="det-top"><h3>Pause</h3><span class="chip pause">RMS energy gate</span></div>
+      <p>
+        The signal is split into short overlapping windows (~50&nbsp;ms) and the RMS level of each is
+        measured to form an energy envelope. Any stretch that stays below the loudness threshold for
+        longer than the minimum duration is marked as a pause — the same judgement you make when you
+        see a flat patch on the waveform and decide it is silence, not signal.
+      </p>
+      <p class="params">Defaults: <b>RMS threshold ≈ 0.01</b> (linear) · <b>minimum duration 0.5&nbsp;s</b>. Lower the threshold for quiet rooms; raise the duration to ignore natural beats between sentences.</p>
+    </div>
+
+    <div class="det click no-break">
+      <div class="det-top"><h3>Click &amp; plosive</h3><span class="chip click">Transient spike ratio</span></div>
+      <p>
+        Using very short windows (~5&nbsp;ms), each frame's energy is compared against the average of
+        its immediate neighbours. When a single frame leaps well above its surroundings — and is loud
+        enough in absolute terms to matter — it is flagged as a transient. This is how a mouth click
+        or a hard "P" reveals itself: a momentary stab of energy that the surrounding speech does not
+        explain.
+      </p>
+      <p class="params">Defaults: <b>spike ratio ≥ 4×</b> local average · <b>minimum level 0.005</b> · marked span <b>≈ 30&nbsp;ms</b>. The marker's score scales with how far the spike exceeds the threshold.</p>
+    </div>
+
+    <div class="det breath no-break">
+      <div class="det-top"><h3>Breath</h3><span class="chip breath">Spectral tilt + low level</span></div>
+      <p>
+        A breath is quiet but bright. Each spectral frame is divided into a low band and a high band;
+        when most of the energy sits in the upper two-thirds of the spectrum <em>and</em> the overall
+        level is below the speech floor, the moment looks like an inhale rather than a voiced sound.
+        Runs that fall within a plausible breath length are marked.
+      </p>
+      <p class="params">Defaults: <b>high-frequency ratio &gt; 0.55</b> · <b>speech floor ≈ 0.03</b> RMS · duration window <b>0.08&nbsp;s – 1.5&nbsp;s</b> · analysis FFT 2048 / hop 512.</p>
+    </div>
+
+    <div class="callout info no-break" style="margin-top:6px">
+      <b>Why thresholds, not magic.</b> Heuristic detectors are predictable and explainable: if a
+      marker looks wrong, you can see exactly which measurement triggered it and nudge that one
+      control. A machine-learning path is scaffolded for the future (see Section&nbsp;7) but is not
+      required for day-to-day use.
+    </div>
+  </section>
+
+  <!-- 4. Composite score -->
+  <section class="section">
+    <div class="section-head">
+      <span class="num">4</span>
+      <h2>The composite score</h2>
+      <span class="tag">Prioritising your time</span>
+    </div>
+    <p class="lead-para">
+      Not every flagged event deserves equal attention. The composite score collapses all markers
+      into one normalised curve along the timeline, weighting each event type by how disruptive it
+      typically is to a listener. The result is a heatmap that tells you <em>where to look first</em>.
+    </p>
+    <div class="grid grid-3">
+      <div class="card no-break" style="border-top:3px solid var(--click)">
+        <h3>Clicks — weight 0.8</h3>
+        <p>The most jarring artifact for a listener, so it dominates the score wherever it appears.</p>
+      </div>
+      <div class="card no-break" style="border-top:3px solid var(--breath)">
+        <h3>Breaths — weight 0.5</h3>
+        <p>Often acceptable, sometimes distracting — a middle priority you may keep or soften.</p>
+      </div>
+      <div class="card no-break" style="border-top:3px solid var(--pause)">
+        <h3>Pauses — weight 0.2</h3>
+        <p>Rarely an error, usually a pacing choice; contributes gently to the overall curve.</p>
+      </div>
+    </div>
+    <p class="small muted" style="margin-top:8px">
+      Scores accumulate into 50&nbsp;ms frames and are normalised to a 0–1 peak, so the heatmap is
+      relative to the busiest moment in <em>your</em> recording — not an absolute scale.
+    </p>
+  </section>
+
+  <div class="pagefoot">
+    <span>Audio Cleanup &amp; Analysis Tool</span>
+    <span>Product Overview · Page 2</span>
+  </div>
+</div>
+
+<!-- ============================ SHEET 3 ============================ -->
+<div class="sheet page-break">
+
+  <!-- 5. Cleanup -->
+  <section class="section no-break">
+    <div class="section-head">
+      <span class="num">5</span>
+      <h2>Cleanup preview &amp; export</h2>
+      <span class="tag">Non-destructive</span>
+    </div>
+    <p class="lead-para">
+      The cleanup stage works in the frequency domain. Audio is transformed with a 2048-point STFT
+      (512 hop); inside the regions marked as clicks or breaths, the spectral content is attenuated by
+      a configurable factor and the signal is resynthesised. Pauses are <em>not</em> touched by
+      cleanup — they are informational markers, not noise to remove.
+    </p>
+    <div class="grid grid-2">
+      <div class="card tint no-break">
+        <h3>Attenuate, don't delete</h3>
+        <p>By default marked regions are reduced to ~15% of their level rather than silenced outright, preserving timing and avoiding hard cuts. Push it toward zero for full removal, or up for a gentle touch.</p>
+      </div>
+      <div class="card tint no-break">
+        <h3>Audition first</h3>
+        <p>Built-in playback lets you hear the recording with markers in context before exporting. The original audio is always preserved; the cleaned version is rendered separately.</p>
+      </div>
+    </div>
+    <div class="callout no-break" style="margin-top:10px">
+      <b>Set expectations:</b> spectral attenuation is a fast, broad-strokes cleanup ideal for taming
+      breaths and softening clicks across a long file. It is not a surgical spectral-repair brush —
+      for forensic, single-artifact restoration you would still reach for a dedicated repair tool.
+    </div>
+  </section>
+
+  <!-- 6. Workflow -->
+  <section class="section">
+    <div class="section-head">
+      <span class="num">6</span>
+      <h2>A typical session</h2>
+      <span class="tag">Workflow</span>
+    </div>
+    <div class="steps">
+      <div class="step no-break"><div><h3>Open the recording</h3><p>Load a WAV, FLAC, OGG, or AIFF file. The waveform, duration, and sample rate appear immediately.</p></div></div>
+      <div class="step no-break"><div><h3>Analyse</h3><p>Run all three detectors in one pass. Markers, the RMS envelope, the composite heatmap, and the spectrogram populate together.</p></div></div>
+      <div class="step no-break"><div><h3>Review against the heatmap</h3><p>Follow the composite score to the busiest moments first. Scrub, play, and confirm each flagged event in context.</p></div></div>
+      <div class="step no-break"><div><h3>Tune the thresholds</h3><p>Adjust pause level, click sensitivity, breath brightness, or cleanup strength with live sliders and watch markers update.</p></div></div>
+      <div class="step no-break"><div><h3>Export</h3><p>Write markers to JSON for use elsewhere, and/or render a cleaned mono WAV. Your source file is never modified.</p></div></div>
+    </div>
+  </section>
+
+  <!-- 7. Roadmap -->
+  <section class="section no-break">
+    <div class="section-head">
+      <span class="num">7</span>
+      <h2>Where it's heading</h2>
+      <span class="tag">Roadmap</span>
+    </div>
+    <p class="lead-para">
+      The detectors today are heuristic and transparent. A machine-learning pathway is already
+      scaffolded: a neural model (a convolutional + recurrent network over spectrogram slices) would
+      classify each moment as speech, breath, click, or silence with greater nuance than fixed
+      thresholds. It is gated on building a labelled dataset of real voice sessions and will arrive as
+      an optional mode — the heuristic detectors remain the dependable default.
+    </p>
+  </section>
+
+  <div class="pagefoot">
+    <span>Audio Cleanup &amp; Analysis Tool</span>
+    <span>Product Overview · Page 3</span>
+  </div>
+</div>
+
+<!-- ============================ SHEET 4 ============================ -->
+<div class="sheet page-break">
+
+  <!-- Use cases -->
+  <section class="section no-break">
+    <div class="section-head">
+      <span class="num">8</span>
+      <h2>Who it's for</h2>
+      <span class="tag">Use cases</span>
+    </div>
+    <div class="grid grid-2">
+      <div class="card no-break"><h3>Podcast &amp; interview editors</h3><p class="small muted">Tighten conversational pacing, knock down distracting mouth noise, and smooth breaths across hour-long episodes — with the search work done up front.</p></div>
+      <div class="card no-break"><h3>Audiobook &amp; narration producers</h3><p class="small muted">Enforce consistent breath and click handling across chapters, and use the heatmap as a QC pass before delivery to a distributor.</p></div>
+      <div class="card no-break"><h3>Voiceover &amp; e-learning</h3><p class="small muted">Clean up booth takes quickly: catch plosives that slipped past the pop filter and trim the dead air between lines.</p></div>
+      <div class="card no-break"><h3>Dialogue &amp; localisation</h3><p class="small muted">Pre-mark non-speech events to hand structured JSON to downstream editors, ADR, or subtitling pipelines.</p></div>
+    </div>
+  </section>
+
+  <!-- Marker export schema -->
+  <section class="section no-break">
+    <div class="section-head">
+      <span class="num">9</span>
+      <h2>Marker export format</h2>
+      <span class="tag">Interoperability</span>
+    </div>
+    <p class="lead-para">
+      Markers export as a flat, human-readable JSON array — easy to parse, diff, or feed into another
+      application. Each entry carries its type, start and end time in seconds, and a confidence score.
+    </p>
+    <div class="card tint no-break">
+<pre class="mono" style="margin:0;background:none;border:none;padding:0;font-size:9.4px;line-height:1.5;color:var(--brand-deep);overflow:auto">{
+  "markers": [
+    { "type": "pause",  "start_sec": 12.40, "end_sec": 13.65, "score": 1.00 },
+    { "type": "click",  "start_sec": 18.91, "end_sec": 18.94, "score": 0.73 },
+    { "type": "breath", "start_sec": 24.05, "end_sec": 24.38, "score": 1.00 }
+  ]
+}</pre>
+    </div>
+  </section>
+
+  <!-- Settings reference -->
+  <section class="section no-break">
+    <div class="section-head">
+      <span class="num">10</span>
+      <h2>Control reference</h2>
+      <span class="tag">Defaults &amp; ranges</span>
+    </div>
+    <table>
+      <thead>
+        <tr><th style="width:26%">Control</th><th style="width:14%">Default</th><th style="width:20%">Range</th><th>What it changes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><b>Pause RMS threshold</b></td><td>0.01</td><td>0.001 – 0.1</td><td>Loudness below which audio counts as silence. Lower = stricter (only true silence).</td></tr>
+        <tr><td><b>Pause min duration</b></td><td>0.5 s</td><td>0.1 – 3.0 s</td><td>How long a gap must last to be flagged. Higher ignores natural sentence beats.</td></tr>
+        <tr><td><b>Click spike ratio</b></td><td>4.0×</td><td>2 – 12×</td><td>How far a transient must exceed its neighbours. Lower = more sensitive.</td></tr>
+        <tr><td><b>Breath HF ratio</b></td><td>0.55</td><td>0.3 – 0.9</td><td>How treble-dominant a quiet moment must be to read as a breath.</td></tr>
+        <tr><td><b>Clean attenuation</b></td><td>0.15</td><td>0.0 – 1.0</td><td>Level marked regions are reduced to. 0 = full removal, 1 = untouched.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- Requirements -->
+  <section class="section no-break">
+    <div class="section-head">
+      <span class="num">11</span>
+      <h2>Good to know</h2>
+      <span class="tag">Scope</span>
+    </div>
+    <div class="grid grid-2">
+      <div>
+        <ul class="tick">
+          <li>Runs natively on Windows 10/11 as a desktop application.</li>
+          <li>Imports WAV, FLAC, OGG, and AIFF; cleaned audio is rendered to mono WAV.</li>
+          <li>Analysis runs offline on the whole file — no internet or cloud upload.</li>
+          <li>Source audio is never modified in place; exports are always new files.</li>
+        </ul>
+      </div>
+      <div>
+        <ul class="tick">
+          <li>Tuned for spoken-word material; music and dense mixes are out of scope.</li>
+          <li>Cleanup is broad spectral attenuation, not surgical spectral repair.</li>
+          <li>Detection is heuristic today; an optional ML mode is on the roadmap.</li>
+          <li>Best results come from reviewing markers, not exporting blind.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <div class="pagefoot">
+    <span>Audio Cleanup &amp; Analysis Tool</span>
+    <span>Product Overview · Page 4</span>
+  </div>
+</div>
+
+</body>
+</html>

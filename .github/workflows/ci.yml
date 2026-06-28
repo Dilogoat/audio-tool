@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Bootstrap vcpkg
+        run: |
+          if (!(Test-Path external/vcpkg/vcpkg.exe)) {
+            git clone --depth 1 https://github.com/microsoft/vcpkg.git external/vcpkg
+            .\external\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+          }
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install CMake and Ninja
+        run: |
+          choco install cmake ninja -y
+
+      - name: Configure
+        run: cmake --preset default
+
+      - name: Build
+        run: cmake --build --preset default
+
+      - name: Test
+        run: ctest --preset default --output-on-failure

@@ -1,0 +1,39 @@
+# Build
+build/
+out/
+cmake-build-*/
+*.user
+*.suo
+*.obj
+*.o
+*.exe
+*.dll
+*.lib
+*.pdb
+*.ilk
+*.exp
+
+# vcpkg
+external/vcpkg/
+
+# IDE
+.vs/
+.vscode/settings.json
+.idea/
+
+# Generated fixtures (large)
+tests/fixtures/*.wav
+!tests/fixtures/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# ML artifacts
+ml/checkpoints/
+ml/export/*.onnx
