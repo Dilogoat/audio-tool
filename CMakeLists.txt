@@ -18,6 +18,7 @@ add_library(audio_core STATIC
     src/core/Markers.cpp
     src/core/CompositeScore.cpp
     src/core/SpectralCleaner.cpp
+    src/core/Editor.cpp
     src/core/Logger.cpp
     src/core/Pipeline.cpp
     src/core/detectors/PauseDetector.cpp
@@ -91,6 +92,7 @@ add_executable(audio_tests
     tests/unit/test_composite.cpp
     tests/unit/test_audio_file.cpp
     tests/unit/test_pipeline.cpp
+    tests/unit/test_editor.cpp
 )
 
 target_compile_definitions(audio_tests PRIVATE TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures")

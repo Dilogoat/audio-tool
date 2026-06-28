@@ -1,4 +1,5 @@
 #include "audio_core/AudioFile.hpp"
+#include "audio_core/Editor.hpp"
 #include "audio_core/Logger.hpp"
 #include "audio_core/Pipeline.hpp"
 
@@ -36,6 +37,13 @@ struct Options {
     bool disable_pauses = false;
     bool disable_clicks = false;
     bool disable_breaths = false;
+
+    bool cut = false;
+    bool cut_pauses = false;
+    bool cut_clicks = false;
+    bool cut_breaths = false;
+    double crossfade_ms = 5.0;
+    bool labels = false;
 };
 
 void print_usage() {
@@ -51,8 +59,12 @@ void print_usage() {
         "OPTIONS:\n"
         "  --out-dir <dir>       Output directory (default: <input_dir>/audio-tool-out)\n"
         "  --config <file>       Load detector settings from a preset JSON\n"
-        "  --clean               Also render a cleaned WAV (never overwrites source)\n"
+        "  --clean               Also render a cleaned WAV (attenuates artifacts)\n"
         "  --markers-only        Only write markers + report (default)\n"
+        "  --cut <types>         Physically remove regions, re-stitch, write edited WAV.\n"
+        "                        Comma list of: pauses,clicks,breaths (e.g. --cut pauses,breaths)\n"
+        "  --crossfade-ms <ms>   Crossfade length at cut joins (default: 5)\n"
+        "  --labels              Write an Audacity label track (.labels.txt)\n"
         "  -r, --recursive       Recurse into subfolders (batch)\n"
         "  --force               Overwrite existing generated outputs\n"
         "  --dry-run             Show what would happen, write nothing\n"
@@ -66,6 +78,8 @@ void print_usage() {
         "  <name>.markers.json   Detected events timeline\n"
         "  <name>.report.json    Per-file summary\n"
         "  <name>.cleaned.wav    Cleaned audio (only with --clean)\n"
+        "  <name>.edited.wav     Cut + re-stitched audio (only with --cut)\n"
+        "  <name>.labels.txt     Audacity labels (only with --labels)\n"
         "  batch-summary.json    Whole-run summary (batch)\n\n"
         "EXIT CODES: 0 ok, 1 partial failure, 2 bad args, 3 fatal\n";
 }
@@ -106,6 +120,31 @@ bool parse_args(int argc, char** argv, Options& opt, std::string& error) {
             opt.clean = true;
         } else if (a == "--markers-only") {
             opt.clean = false;
+        } else if (a == "--cut") {
+            const std::string types = need_value("--cut");
+            opt.cut = true;
+            std::string token;
+            std::string lowered = types;
+            std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            std::size_t pos = 0;
+            while (pos <= lowered.size()) {
+                const std::size_t comma = lowered.find(',', pos);
+                token = lowered.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+                if (token == "pauses" || token == "pause") opt.cut_pauses = true;
+                else if (token == "clicks" || token == "click") opt.cut_clicks = true;
+                else if (token == "breaths" || token == "breath") opt.cut_breaths = true;
+                else if (!token.empty()) {
+                    error = "unknown --cut type: " + token + " (use pauses,clicks,breaths)";
+                    return false;
+                }
+                if (comma == std::string::npos) break;
+                pos = comma + 1;
+            }
+        } else if (a == "--crossfade-ms") {
+            opt.crossfade_ms = std::stod(need_value("--crossfade-ms"));
+        } else if (a == "--labels") {
+            opt.labels = true;
         } else if (a == "-r" || a == "--recursive") {
             opt.recursive = true;
         } else if (a == "--force") {
@@ -173,9 +212,11 @@ FileOutcome process_file(const fs::path& input, const fs::path& out_dir,
         const fs::path markers_path = out_dir / (stem + ".markers.json");
         const fs::path report_path = out_dir / (stem + ".report.json");
         const fs::path cleaned_path = out_dir / (stem + ".cleaned.wav");
+        const fs::path edited_path = out_dir / (stem + ".edited.wav");
+        const fs::path labels_path = out_dir / (stem + ".labels.txt");
 
         // Safety: never write any output onto the source file.
-        for (const fs::path& outp : {markers_path, report_path, cleaned_path}) {
+        for (const fs::path& outp : {markers_path, report_path, cleaned_path, edited_path, labels_path}) {
             if (fs::weakly_canonical(outp) == in_canon) {
                 outcome.error = "refusing to overwrite source file";
                 log.error(input.filename().string() + ": " + outcome.error);
@@ -185,7 +226,9 @@ FileOutcome process_file(const fs::path& input, const fs::path& out_dir,
 
         if (!opt.force && !opt.dry_run) {
             const bool exists = fs::exists(markers_path) || fs::exists(report_path) ||
-                                (opt.clean && fs::exists(cleaned_path));
+                                (opt.clean && fs::exists(cleaned_path)) ||
+                                (opt.cut && fs::exists(edited_path)) ||
+                                (opt.labels && fs::exists(labels_path));
             if (exists) {
                 outcome.skipped = true;
                 log.warn(input.filename().string() + ": outputs exist, skipping (use --force)");
@@ -218,9 +261,29 @@ FileOutcome process_file(const fs::path& input, const fs::path& out_dir,
         log.debug("wrote " + markers_path.string());
         log.debug("wrote " + report_path.string());
 
+        if (opt.labels) {
+            result.markers.save_audacity_labels(labels_path.string());
+            log.debug("wrote " + labels_path.string());
+        }
+
         if (opt.clean) {
             audio_core::AudioFile::save_mono(cleaned_path.string(), result.cleaned, audio.sample_rate);
             log.debug("wrote " + cleaned_path.string());
+        }
+
+        if (opt.cut) {
+            audio_core::EditConfig edit;
+            edit.cut_pauses = opt.cut_pauses;
+            edit.cut_clicks = opt.cut_clicks;
+            edit.cut_breaths = opt.cut_breaths;
+            edit.crossfade_ms = opt.crossfade_ms;
+            const auto edited = audio_core::apply_cuts(audio.samples, audio.sample_rate,
+                                                       result.markers.all(), edit);
+            audio_core::AudioFile::save_mono(edited_path.string(), edited.samples, audio.sample_rate);
+            log.info(input.filename().string() + ": cut " + std::to_string(edited.regions_cut) +
+                     " region(s), removed " + std::to_string(edited.removed_sec) + "s (" +
+                     std::to_string(edited.original_sec) + "s -> " + std::to_string(edited.edited_sec) + "s)");
+            log.debug("wrote " + edited_path.string());
         }
 
         outcome.ok = true;

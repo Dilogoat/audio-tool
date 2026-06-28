@@ -57,6 +57,12 @@ audio_tool_cli batch "D:\recordings" --out-dir "D:\out" --clean --recursive
 # Use a saved preset, markers only
 audio_tool_cli batch "D:\recordings" --config presets\podcast.json
 
+# Physically cut pauses + breaths and re-stitch (writes <name>.edited.wav)
+audio_tool_cli batch "D:\recordings" --out-dir "D:\out" --cut pauses,breaths
+
+# Export Audacity labels for manual editing in a DAW
+audio_tool_cli analyze "D:\recordings\episode.wav" --labels
+
 # Write a default config you can edit
 audio_tool_cli init-config mypreset.json
 
@@ -70,11 +76,18 @@ source):
 - `<name>.markers.json` - detected events timeline
 - `<name>.report.json` - per-file summary (duration, counts, peak score)
 - `<name>.cleaned.wav` - cleaned audio (only with `--clean`)
+- `<name>.edited.wav` - cut + re-stitched audio (only with `--cut`)
+- `<name>.labels.txt` - Audacity label track (only with `--labels`)
 - `batch-summary.json` - whole-run summary (batch mode)
 
-Key options: `--out-dir`, `--config`, `--clean`, `-r/--recursive`, `--force`
-(overwrite previous outputs), `--dry-run`, `--no-pauses/--no-clicks/--no-breaths`,
+Key options: `--out-dir`, `--config`, `--clean`, `--cut <pauses,clicks,breaths>`,
+`--crossfade-ms <ms>`, `--labels`, `-r/--recursive`, `--force` (overwrite previous
+outputs), `--dry-run`, `--no-pauses/--no-clicks/--no-breaths`,
 `--log-level <error|warn|info|debug>`, `--log-file <path>`.
+
+`--clean` attenuates artifacts in place (same length); `--cut` physically removes the
+flagged regions and crossfades the joins, producing a shorter file. The source file is
+never modified.
 
 Exit codes: `0` ok, `1` partial failure, `2` bad args, `3` fatal.
 

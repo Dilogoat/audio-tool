@@ -392,6 +392,20 @@ void App::render_toolbar() {
             }
         }
     }
+    ImGui::SameLine();
+    if (ImGui::Button("Export Edited WAV", ImVec2(140, 0))) {
+        const auto path = save_file_dialog();
+        if (!path.empty()) {
+            try {
+                std::lock_guard<std::mutex> lock(data_mutex_);
+                const auto edited = audio_core::apply_cuts(audio_.samples, audio_.sample_rate,
+                                                           markers_.all(), edit_cfg_);
+                audio_core::AudioFile::save_mono(path, edited.samples, audio_.sample_rate);
+            } catch (const std::exception& ex) {
+                std::cerr << ex.what() << '\n';
+            }
+        }
+    }
     ImGui::EndDisabled();
 
     if (busy) {
@@ -427,6 +441,16 @@ void App::render_sidebar(const UiSnapshot& snap) {
     ImGui::SliderFloat("##bhf", reinterpret_cast<float*>(&breath_cfg_.hf_ratio_threshold), 0.3f, 0.9f, "%.2f");
     ImGui::Text("Clean attenuation");
     ImGui::SliderFloat("##clean", reinterpret_cast<float*>(&clean_cfg_.attenuation), 0.0f, 1.0f, "%.2f");
+    ImGui::PopItemWidth();
+
+    ImGui::Dummy(ImVec2(0, 6));
+    ImGui::TextDisabled("CUT (Export Edited WAV)");
+    ImGui::Checkbox("Cut pauses", &edit_cfg_.cut_pauses);
+    ImGui::Checkbox("Cut clicks", &edit_cfg_.cut_clicks);
+    ImGui::Checkbox("Cut breaths", &edit_cfg_.cut_breaths);
+    ImGui::PushItemWidth(-1);
+    ImGui::Text("Crossfade (ms)");
+    ImGui::SliderFloat("##xfade", reinterpret_cast<float*>(&edit_cfg_.crossfade_ms), 0.0f, 30.0f, "%.1f");
     ImGui::PopItemWidth();
 
     ImGui::Dummy(ImVec2(0, 6));

@@ -63,6 +63,16 @@ void Markers::save_json(const std::string& path) const {
     out << root.dump(2);
 }
 
+void Markers::save_audacity_labels(const std::string& path) const {
+    std::ofstream out(path);
+    if (!out) {
+        throw std::runtime_error("Failed to write labels file");
+    }
+    for (const auto& m : markers_) {
+        out << m.start_sec << '\t' << m.end_sec << '\t' << marker_type_to_string(m.type) << '\n';
+    }
+}
+
 std::vector<Marker> Markers::load_json(const std::string& path) {
     std::ifstream in(path);
     if (!in) {

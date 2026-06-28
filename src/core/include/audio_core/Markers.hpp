@@ -32,6 +32,10 @@ public:
     void save_json(const std::string& path) const;
     static std::vector<Marker> load_json(const std::string& path);
 
+    // Tab-separated Audacity label track (File > Import > Labels). Also imports
+    // cleanly into Reaper and other DAWs that read Audacity labels.
+    void save_audacity_labels(const std::string& path) const;
+
 private:
     std::vector<Marker> markers_;
 };

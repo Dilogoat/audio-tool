@@ -2,6 +2,7 @@
 
 #include "audio_core/AudioFile.hpp"
 #include "audio_core/CompositeScore.hpp"
+#include "audio_core/Editor.hpp"
 #include "audio_core/Markers.hpp"
 #include "audio_core/Pipeline.hpp"
 #include "audio_core/RmsAnalyzer.hpp"
@@ -65,6 +66,7 @@ private:
     audio_core::BreathDetectorConfig breath_cfg_{};
     audio_core::CompositeScoreConfig score_cfg_{};
     audio_core::CleanConfig clean_cfg_{};
+    audio_core::EditConfig edit_cfg_{};
 
     std::atomic<bool> playing_{false};
     std::atomic<double> playhead_sec_{0.0};
