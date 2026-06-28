@@ -7,6 +7,7 @@
 #include "audio_core/Markers.hpp"
 #include "audio_core/Pipeline.hpp"
 #include "audio_core/RmsAnalyzer.hpp"
+#include "audio_core/Session.hpp"
 #include "audio_core/SpectralCleaner.hpp"
 #include "audio_core/Stft.hpp"
 #include "audio_core/detectors/BreathDetector.hpp"
@@ -39,12 +40,15 @@ private:
     void render_sidebar(const UiSnapshot& snap);
     void render_plots(const UiSnapshot& snap);
     void open_audio();
+    void load_session();
     void run_analysis();
     void start_playback();
     void start_playback_segment(double start_sec, double end_sec);
     void stop_playback();
     void rebuild_edited_cache();
     void preview_marker_at(int index);
+    audio_core::Session build_session_snapshot() const;
+    audio_core::PipelineConfig current_config() const;
 
     enum class PlaybackSource { Original, Cleaned, Edited };
 
@@ -52,6 +56,7 @@ private:
     std::string file_path_;
     audio_core::AudioData audio_;
     audio_core::Markers markers_;
+    std::vector<audio_core::ReviewDecision> review_decisions_;
     std::vector<audio_core::RmsFrame> rms_frames_;
     std::vector<audio_core::ScoreFrame> score_frames_;
     audio_core::Spectrogram spectrogram_;
@@ -70,6 +75,10 @@ private:
     int marker_remove_request_ = -1;
     int preview_marker_request_ = -1;
     int selected_marker_ = -1;
+    // Review decision changes are requested from the UI thread and applied under
+    // data_mutex_ in render_ui, so the analysis thread can never race the write.
+    int decision_request_index_ = -1;
+    audio_core::ReviewDecision decision_request_value_ = audio_core::ReviewDecision::Pending;
     PlaybackSource playback_source_ = PlaybackSource::Original;
 
     audio_core::PauseDetectorConfig pause_cfg_{};
@@ -78,6 +87,9 @@ private:
     audio_core::CompositeScoreConfig score_cfg_{};
     audio_core::CleanConfig clean_cfg_{};
     audio_core::EditConfig edit_cfg_{};
+    bool detect_pauses_ = true;
+    bool detect_clicks_ = true;
+    bool detect_breaths_ = true;
 
     std::atomic<bool> playing_{false};
     std::atomic<double> playhead_sec_{0.0};

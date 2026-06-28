@@ -21,6 +21,7 @@ add_library(audio_core STATIC
     src/core/SpectralCleaner.cpp
     src/core/Editor.cpp
     src/core/MarkerExports.cpp
+    src/core/Session.cpp
     src/core/Logger.cpp
     src/core/Pipeline.cpp
     src/core/detectors/PauseDetector.cpp
@@ -95,6 +96,7 @@ add_executable(audio_tests
     tests/unit/test_audio_file.cpp
     tests/unit/test_formats.cpp
     tests/unit/test_marker_exports.cpp
+    tests/unit/test_session.cpp
     tests/unit/test_pipeline.cpp
     tests/unit/test_editor.cpp
 )

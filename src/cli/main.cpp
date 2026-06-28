@@ -4,6 +4,8 @@
 #include "audio_core/Logger.hpp"
 #include "audio_core/MarkerExports.hpp"
 #include "audio_core/Pipeline.hpp"
+#include "audio_core/Session.hpp"
+#include "audio_core/SpectralCleaner.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -13,6 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <thread>
 #include <string>
 #include <vector>
 
@@ -48,6 +51,9 @@ struct Options {
     bool labels = false;
     bool export_markers_all = false;
     std::vector<audio_core::MarkerExportFormat> export_marker_formats;
+    bool once = false;
+    int poll_ms = 1000;
+    int settle_ms = 3000;
 };
 
 void print_usage() {
@@ -58,6 +64,7 @@ void print_usage() {
         "COMMANDS:\n"
         "  analyze <file...>     Analyze one or more audio files\n"
         "  batch <dir...>        Analyze every audio file in a folder\n"
+        "  watch <dir>           Watch a folder and auto-process new audio files\n"
         "  init-config <file>    Write a default config/preset JSON\n"
         "  help                  Show this help\n\n"
         "OPTIONS:\n"
@@ -70,6 +77,9 @@ void print_usage() {
         "  --crossfade-ms <ms>   Crossfade length at cut joins (default: 5)\n"
         "  --labels              Write an Audacity label track (.labels.txt)\n"
         "  --export-markers <list>  Export marker sidecars: all | csv,edl,fcpxml,reaper,audition,audacity\n"
+        "  --once                Watch mode: scan once and exit (great for schedulers/tests)\n"
+        "  --poll-ms <ms>        Watch mode: polling interval (default: 1000)\n"
+        "  --settle-ms <ms>      Watch mode: wait until file age is at least this old (default: 3000)\n"
         "  -r, --recursive       Recurse into subfolders (batch)\n"
         "  --force               Overwrite existing generated outputs\n"
         "  --dry-run             Show what would happen, write nothing\n"
@@ -90,6 +100,7 @@ void print_usage() {
         "  <name>.markers.fcpxml FCP7 XML markers for Premiere/Audition\n"
         "  <name>.reaper-markers.csv  Reaper marker/region CSV\n"
         "  <name>.audition-markers.csv Adobe Audition marker CSV\n"
+        "  <name>.audiotool.json Session file for GUI review mode\n"
         "  batch-summary.json    Whole-run summary (batch)\n\n"
         "EXIT CODES: 0 ok, 1 partial failure, 2 bad args, 3 fatal\n";
 }
@@ -163,6 +174,12 @@ bool parse_args(int argc, char** argv, Options& opt, std::string& error) {
                 const auto parsed = audio_core::parse_marker_export_formats(formats);
                 opt.export_marker_formats.insert(opt.export_marker_formats.end(), parsed.begin(), parsed.end());
             }
+        } else if (a == "--once") {
+            opt.once = true;
+        } else if (a == "--poll-ms") {
+            opt.poll_ms = std::stoi(need_value("--poll-ms"));
+        } else if (a == "--settle-ms") {
+            opt.settle_ms = std::stoi(need_value("--settle-ms"));
         } else if (a == "-r" || a == "--recursive") {
             opt.recursive = true;
         } else if (a == "--force") {
@@ -229,12 +246,13 @@ FileOutcome process_file(const fs::path& input, const fs::path& out_dir,
 
         const fs::path markers_path = out_dir / (stem + ".markers.json");
         const fs::path report_path = out_dir / (stem + ".report.json");
+        const fs::path session_path = out_dir / (stem + ".audiotool.json");
         const fs::path cleaned_path = out_dir / (stem + ".cleaned.wav");
         const fs::path edited_path = out_dir / (stem + ".edited.wav");
         const fs::path labels_path = out_dir / (stem + ".labels.txt");
 
         // Safety: never write any output onto the source file.
-        for (const fs::path& outp : {markers_path, report_path, cleaned_path, edited_path, labels_path}) {
+        for (const fs::path& outp : {markers_path, report_path, session_path, cleaned_path, edited_path, labels_path}) {
             if (fs::weakly_canonical(outp) == in_canon) {
                 outcome.error = "refusing to overwrite source file";
                 log.error(input.filename().string() + ": " + outcome.error);
@@ -243,11 +261,16 @@ FileOutcome process_file(const fs::path& input, const fs::path& out_dir,
         }
 
         if (!opt.force && !opt.dry_run) {
-            const bool exists = fs::exists(markers_path) || fs::exists(report_path) ||
-                                (opt.clean && fs::exists(cleaned_path)) ||
-                                (opt.cut && fs::exists(edited_path)) ||
-                                (opt.labels && fs::exists(labels_path));
-            if (exists) {
+            // Skip only when *every* expected output already exists. Using OR
+            // here would let a partial/older run (e.g. markers.json present but
+            // the newer .audiotool.json missing) skip forever and never backfill.
+            const bool any_missing =
+                !fs::exists(markers_path) || !fs::exists(report_path) ||
+                !fs::exists(session_path) ||
+                (opt.clean && !fs::exists(cleaned_path)) ||
+                (opt.cut && !fs::exists(edited_path)) ||
+                (opt.labels && !fs::exists(labels_path));
+            if (!any_missing) {
                 outcome.skipped = true;
                 log.warn(input.filename().string() + ": outputs exist, skipping (use --force)");
                 return outcome;
@@ -274,30 +297,65 @@ FileOutcome process_file(const fs::path& input, const fs::path& out_dir,
             return outcome;
         }
 
-        result.markers.save_json(markers_path.string());
+        // Build the session, carrying over any human accept/reject decisions
+        // from a prior run so re-processing honors them in every export.
+        auto session = audio_core::make_session(input.string(), result, audio.sample_rate,
+                                                pipeline.config());
+        if (fs::exists(session_path)) {
+            try {
+                const auto prior = audio_core::load_session_json(session_path.string());
+                const int carried = audio_core::merge_decisions(session, prior);
+                if (carried > 0) {
+                    log.info(input.filename().string() + ": carried " + std::to_string(carried) +
+                             " prior review decision(s)");
+                }
+            } catch (const std::exception& ex) {
+                log.warn(session_path.filename().string() +
+                         ": ignoring unreadable prior session (" + std::string(ex.what()) + ")");
+            }
+        }
+
+        // Exports reflect the review-filtered set. On a fresh run all markers are
+        // Pending (none rejected), so this is identical to the full detected set.
+        const auto review_markers = audio_core::exportable_markers(session);
+        const bool has_rejections = review_markers.size() != result.markers.all().size();
+
+        audio_core::Markers review_json;
+        review_json.merge(review_markers);
+        review_json.save_json(markers_path.string());
         audio_core::save_report_json(report_path.string(), input.string(), result);
+        audio_core::save_session_json(session_path.string(), session);
         log.debug("wrote " + markers_path.string());
         log.debug("wrote " + report_path.string());
+        log.debug("wrote " + session_path.string());
 
         if (opt.labels) {
-            result.markers.save_audacity_labels(labels_path.string());
+            review_json.save_audacity_labels(labels_path.string());
             log.debug("wrote " + labels_path.string());
         }
 
         if (opt.export_markers_all) {
-            audio_core::export_all_marker_formats(out_dir.string(), stem, result.markers.all(),
+            audio_core::export_all_marker_formats(out_dir.string(), stem, review_markers,
                                                   result.duration_sec, audio.sample_rate);
             log.debug("wrote pro-editor marker sidecars for " + stem);
         } else if (!opt.export_marker_formats.empty()) {
             for (const auto fmt : opt.export_marker_formats) {
-                audio_core::export_markers(fmt, (out_dir / stem).string(), result.markers.all(),
+                audio_core::export_markers(fmt, (out_dir / stem).string(), review_markers,
                                              result.duration_sec, audio.sample_rate);
             }
             log.debug("wrote selected marker exports for " + stem);
         }
 
         if (opt.clean) {
-            audio_core::AudioFile::save_mono(cleaned_path.string(), result.cleaned, audio.sample_rate);
+            // Re-clean over the non-rejected markers if any were rejected, so a
+            // rejected region is not attenuated in the exported audio.
+            if (has_rejections) {
+                const auto cleaned = audio_core::SpectralCleaner{}.clean(
+                    audio.samples, audio.sample_rate, review_markers, pipeline.config().clean);
+                audio_core::AudioFile::save_mono(cleaned_path.string(), cleaned, audio.sample_rate);
+            } else {
+                audio_core::AudioFile::save_mono(cleaned_path.string(), result.cleaned, audio.sample_rate);
+            }
             log.debug("wrote " + cleaned_path.string());
         }
 
@@ -308,7 +366,7 @@ FileOutcome process_file(const fs::path& input, const fs::path& out_dir,
             edit.cut_breaths = opt.cut_breaths;
             edit.crossfade_ms = opt.crossfade_ms;
             const auto edited = audio_core::apply_cuts(audio.samples, audio.sample_rate,
-                                                       result.markers.all(), edit);
+                                                       review_markers, edit);
             audio_core::AudioFile::save_mono(edited_path.string(), edited.samples, audio.sample_rate);
             log.info(input.filename().string() + ": cut " + std::to_string(edited.regions_cut) +
                      " region(s), removed " + std::to_string(edited.removed_sec) + "s (" +
@@ -445,6 +503,149 @@ int run_batch(const Options& opt) {
     return any_failed ? 1 : 0;
 }
 
+std::vector<fs::path> collect_audio_files(const fs::path& root, bool recursive) {
+    std::vector<fs::path> files;
+    if (recursive) {
+        for (const auto& e : fs::recursive_directory_iterator(root)) {
+            if (e.is_regular_file() && is_audio_file(e.path())) {
+                files.push_back(e.path());
+            }
+        }
+    } else {
+        for (const auto& e : fs::directory_iterator(root)) {
+            if (e.is_regular_file() && is_audio_file(e.path())) {
+                files.push_back(e.path());
+            }
+        }
+    }
+    std::sort(files.begin(), files.end());
+    return files;
+}
+
+nlohmann::json load_watch_state(const fs::path& path) {
+    if (!fs::exists(path)) {
+        return nlohmann::json::object();
+    }
+    std::ifstream in(path);
+    if (!in) {
+        return nlohmann::json::object();
+    }
+    return nlohmann::json::parse(in, nullptr, false);
+}
+
+void save_watch_state(const fs::path& path, const nlohmann::json& state) {
+    std::ofstream out(path);
+    out << state.dump(2);
+}
+
+long long write_stamp(const fs::path& path) {
+    return fs::last_write_time(path).time_since_epoch().count();
+}
+
+// A file counts as settled once it has gone untouched for at least settle_ms.
+// settle_ms <= 0 means "no wait"; run_watch only allows that for one-shot scans
+// (--once), where files are expected to already be complete.
+bool file_is_settled(const fs::path& path, int settle_ms) {
+    if (settle_ms <= 0) {
+        return true;
+    }
+    const auto age = fs::file_time_type::clock::now() - fs::last_write_time(path);
+    return std::chrono::duration_cast<std::chrono::milliseconds>(age).count() >= settle_ms;
+}
+
+int run_watch(const Options& opt) {
+    Logger& log = Logger::instance();
+    if (opt.inputs.empty()) {
+        log.error("watch: no input folder given");
+        return 2;
+    }
+
+    const fs::path root(opt.inputs.front());
+    if (!fs::exists(root) || !fs::is_directory(root)) {
+        log.error("watch: not a folder: " + root.string());
+        return 2;
+    }
+
+    Options process_opt = opt;
+    process_opt.force = true;
+    if (!process_opt.export_markers_all && process_opt.export_marker_formats.empty() && !process_opt.labels) {
+        process_opt.export_markers_all = true;
+    }
+
+    // In continuous watch mode a zero settle window would let us grab files that
+    // are still being copied in. Only honor --settle-ms 0 for one-shot scans
+    // (--once), where the caller guarantees the files are already complete.
+    if (!process_opt.once && process_opt.settle_ms <= 0) {
+        constexpr int kMinContinuousSettleMs = 500;
+        log.warn("watch: --settle-ms <= 0 is unsafe in continuous mode; using " +
+                 std::to_string(kMinContinuousSettleMs) + " ms (use --once for an immediate one-shot scan)");
+        process_opt.settle_ms = kMinContinuousSettleMs;
+    }
+
+    const fs::path out_dir = resolve_out_dir(process_opt, root);
+    if (!process_opt.dry_run) {
+        fs::create_directories(out_dir);
+    }
+    const fs::path state_path = out_dir / "watch-state.json";
+    nlohmann::json state = load_watch_state(state_path);
+    if (!state.is_object()) {
+        state = nlohmann::json::object();
+    }
+
+    const audio_core::Pipeline pipeline(build_config(process_opt));
+    log.info("Watching " + root.string() + " -> " + out_dir.string());
+    log.info("Settle " + std::to_string(process_opt.settle_ms) + " ms, poll " +
+             std::to_string(process_opt.poll_ms) + " ms");
+
+    int failures = 0;
+    do {
+        for (const auto& file : collect_audio_files(root, process_opt.recursive)) {
+            if (!file_is_settled(file, process_opt.settle_ms)) {
+                continue;
+            }
+            const fs::path canon = fs::weakly_canonical(file);
+            const std::string key = canon.string();
+            const long long stamp = write_stamp(canon);
+            // Skip only if this exact version was already processed successfully.
+            // A prior failure (ok=false, not skipped) must be retried, otherwise
+            // a transient error would permanently strand the file until its mtime
+            // changes.
+            if (state.contains(key)) {
+                const auto& entry = state.at(key);
+                const bool done = entry.value("ok", false) || entry.value("skipped", false);
+                if (done && entry.value("stamp", 0LL) == stamp) {
+                    continue;
+                }
+            }
+
+            log.info("watch: processing " + file.filename().string());
+            auto outcome = process_file(canon, out_dir, pipeline, process_opt);
+            state[key] = {
+                {"stamp", stamp},
+                {"last_seen", std::chrono::duration_cast<std::chrono::seconds>(
+                                  std::chrono::system_clock::now().time_since_epoch())
+                                  .count()},
+                {"ok", outcome.ok},
+                {"skipped", outcome.skipped},
+                {"error", outcome.error},
+            };
+            if (!process_opt.dry_run) {
+                save_watch_state(state_path, state);
+            }
+            if (!outcome.ok && !outcome.skipped) {
+                ++failures;
+            }
+        }
+
+        if (process_opt.once) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds((std::max)(100, process_opt.poll_ms)));
+    } while (true);
+
+    return failures == 0 ? 0 : 1;
+}
+
 int run_init_config(const Options& opt) {
     Logger& log = Logger::instance();
     if (opt.inputs.empty()) {
@@ -490,6 +691,9 @@ int main(int argc, char** argv) {
     }
     if (opt.command == "batch") {
         return run_batch(opt);
+    }
+    if (opt.command == "watch") {
+        return run_watch(opt);
     }
     if (opt.command == "init-config") {
         return run_init_config(opt);

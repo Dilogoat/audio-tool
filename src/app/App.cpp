@@ -31,30 +31,28 @@ namespace {
 // PortAudio's Pa_Initialize() puts the main thread into an MTA, which makes the
 // Explorer dialog fail to enumerate files (only folders appear). Running the
 // dialog on a dedicated STA thread avoids that conflict.
-std::string run_file_dialog(bool save) {
+std::string run_file_dialog(bool save, const char* filter, const char* title,
+                            const char* default_name, const char* default_ext) {
     std::string result;
     std::thread worker([&]() {
         const HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
 
         char filename[MAX_PATH] = "";
-        if (save) {
-            std::strncpy(filename, "cleaned.wav", sizeof(filename) - 1);
+        if (save && default_name) {
+            std::strncpy(filename, default_name, sizeof(filename) - 1);
         }
 
         OPENFILENAMEA ofn{};
         ofn.lStructSize = sizeof(ofn);
-        static const std::string open_filter = audio_core::SupportedFormats::win32_open_filter();
-        ofn.lpstrFilter = save
-            ? "WAV Files (*.wav)\0*.wav\0All Files (*.*)\0*.*\0\0"
-            : open_filter.c_str();
+        ofn.lpstrFilter = filter;
         ofn.nFilterIndex = 1;
         ofn.lpstrFile = filename;
         ofn.nMaxFile = MAX_PATH;
-        ofn.lpstrTitle = save ? "Export Cleaned Audio" : "Open Audio File";
+        ofn.lpstrTitle = title;
         ofn.Flags = OFN_EXPLORER | OFN_NOCHANGEDIR |
                     (save ? OFN_OVERWRITEPROMPT : (OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST));
         if (save) {
-            ofn.lpstrDefExt = "wav";
+            ofn.lpstrDefExt = default_ext;
         }
 
         const BOOL ok = save ? GetSaveFileNameA(&ofn) : GetOpenFileNameA(&ofn);
@@ -73,7 +71,8 @@ std::string run_file_dialog(bool save) {
 
 std::string open_file_dialog() {
 #ifdef _WIN32
-    return run_file_dialog(false);
+    static const std::string open_filter = audio_core::SupportedFormats::win32_open_filter();
+    return run_file_dialog(false, open_filter.c_str(), "Open Audio File", nullptr, nullptr);
 #else
     return {};
 #endif
@@ -81,7 +80,19 @@ std::string open_file_dialog() {
 
 std::string save_file_dialog() {
 #ifdef _WIN32
-    return run_file_dialog(true);
+    return run_file_dialog(true, "WAV Files (*.wav)\0*.wav\0All Files (*.*)\0*.*\0\0",
+                           "Export Cleaned Audio", "cleaned.wav", "wav");
+#else
+    return {};
+#endif
+}
+
+std::string open_session_dialog() {
+#ifdef _WIN32
+    return run_file_dialog(false,
+                           "Audio Tool Session (*.audiotool.json)\0*.audiotool.json\0"
+                           "JSON Files (*.json)\0*.json\0All Files (*.*)\0*.*\0\0",
+                           "Open Session", nullptr, nullptr);
 #else
     return {};
 #endif
@@ -231,13 +242,7 @@ void App::run_analysis() {
         }
 
         // Shared detection path (identical to the CLI).
-        audio_core::PipelineConfig cfg;
-        cfg.pause = pause_cfg_;
-        cfg.transient = transient_cfg_;
-        cfg.breath = breath_cfg_;
-        cfg.score = score_cfg_;
-        cfg.clean = clean_cfg_;
-        audio_core::Pipeline pipeline(cfg);
+        audio_core::Pipeline pipeline(current_config());
         auto result = pipeline.analyze(local_audio, true);
 
         // RMS envelope and spectrogram are computed here for display only.
@@ -251,6 +256,7 @@ void App::run_analysis() {
         {
             std::lock_guard<std::mutex> lock(data_mutex_);
             markers_ = std::move(result.markers);
+            review_decisions_.assign(markers_.all().size(), audio_core::ReviewDecision::Pending);
             rms_frames_ = std::move(rms_data);
             score_frames_ = std::move(result.scores);
             spectrogram_ = std::move(spec);
@@ -270,7 +276,9 @@ void App::rebuild_edited_cache() {
         edited_cache_dirty_ = false;
         return;
     }
-    const auto edited = audio_core::apply_cuts(audio_.samples, audio_.sample_rate, markers_.all(), edit_cfg_);
+    const auto session = build_session_snapshot();
+    const auto markers = audio_core::exportable_markers(session);
+    const auto edited = audio_core::apply_cuts(audio_.samples, audio_.sample_rate, markers, edit_cfg_);
     edited_audio_ = std::move(edited.samples);
     edited_cache_dirty_ = false;
 }
@@ -296,11 +304,16 @@ void App::start_playback_segment(double start_sec, double end_sec) {
             local = audio_;
             sample_rate = local.sample_rate;
             if (playback_source_ == PlaybackSource::Cleaned) {
-                source = cleaned_audio_.empty() ? local.samples : cleaned_audio_;
+                const auto session = build_session_snapshot();
+                const auto markers = audio_core::exportable_markers(session);
+                source = audio_core::SpectralCleaner{}.clean(local.samples, local.sample_rate,
+                                                             markers, clean_cfg_);
             } else if (playback_source_ == PlaybackSource::Edited) {
                 if (edited_cache_dirty_) {
+                    const auto session = build_session_snapshot();
+                    const auto markers = audio_core::exportable_markers(session);
                     const auto edited = audio_core::apply_cuts(local.samples, local.sample_rate,
-                                                               markers_.all(), edit_cfg_);
+                                                               markers, edit_cfg_);
                     edited_audio_ = edited.samples;
                     edited_cache_dirty_ = false;
                 }
@@ -371,6 +384,38 @@ void App::preview_marker_at(int index) {
     start_playback_segment(start, end);
 }
 
+audio_core::PipelineConfig App::current_config() const {
+    audio_core::PipelineConfig cfg;
+    cfg.pause = pause_cfg_;
+    cfg.transient = transient_cfg_;
+    cfg.breath = breath_cfg_;
+    cfg.score = score_cfg_;
+    cfg.clean = clean_cfg_;
+    cfg.detect_pauses = detect_pauses_;
+    cfg.detect_clicks = detect_clicks_;
+    cfg.detect_breaths = detect_breaths_;
+    return cfg;
+}
+
+audio_core::Session App::build_session_snapshot() const {
+    audio_core::Session session;
+    session.source_path = file_path_;
+    session.duration_sec = audio_.samples.empty()
+                               ? 0.0
+                               : static_cast<double>(audio_.samples.size()) / audio_.sample_rate;
+    session.sample_rate = audio_.sample_rate;
+    session.config = current_config();
+    const auto& all = markers_.all();
+    session.markers.reserve(all.size());
+    for (std::size_t i = 0; i < all.size(); ++i) {
+        const auto decision = i < review_decisions_.size()
+                                  ? review_decisions_[i]
+                                  : audio_core::ReviewDecision::Pending;
+        session.markers.push_back({all[i], decision, {}});
+    }
+    return session;
+}
+
 void App::stop_playback() {
     playing_ = false;
     if (playback_thread_.joinable()) {
@@ -383,6 +428,7 @@ struct App::UiSnapshot {
     audio_core::Markers markers;
     std::vector<audio_core::RmsFrame> rms;
     std::vector<audio_core::ScoreFrame> scores;
+    std::vector<audio_core::ReviewDecision> review;
     audio_core::Spectrogram spec;
     double duration = 0.0;
 };
@@ -398,6 +444,7 @@ void App::open_audio() {
         audio_ = audio_core::AudioFile::load(path);
         has_audio_ = true;
         markers_ = {};
+        review_decisions_.clear();
         rms_frames_.clear();
         score_frames_.clear();
         spectrogram_ = {};
@@ -412,12 +459,74 @@ void App::open_audio() {
     }
 }
 
+void App::load_session() {
+    const auto path = open_session_dialog();
+    if (path.empty()) {
+        return;
+    }
+    stop_playback();
+    try {
+        const auto session = audio_core::load_session_json(path);
+        // Load the referenced source audio before mutating any state, so a
+        // moved/missing source leaves the current session untouched.
+        audio_core::AudioData loaded = audio_core::AudioFile::load(session.source_path);
+
+        std::lock_guard<std::mutex> lock(data_mutex_);
+        file_path_ = session.source_path;
+        audio_ = std::move(loaded);
+        has_audio_ = true;
+
+        pause_cfg_ = session.config.pause;
+        transient_cfg_ = session.config.transient;
+        breath_cfg_ = session.config.breath;
+        score_cfg_ = session.config.score;
+        clean_cfg_ = session.config.clean;
+        detect_pauses_ = session.config.detect_pauses;
+        detect_clicks_ = session.config.detect_clicks;
+        detect_breaths_ = session.config.detect_breaths;
+
+        std::vector<audio_core::Marker> restored;
+        restored.reserve(session.markers.size());
+        review_decisions_.clear();
+        review_decisions_.reserve(session.markers.size());
+        for (const auto& sm : session.markers) {
+            restored.push_back(sm.marker);
+            review_decisions_.push_back(sm.decision);
+        }
+        markers_ = {};
+        markers_.merge(restored);
+
+        // Analysis-derived visuals (RMS, score, spectrogram, cleaned audio) are
+        // not persisted in the session; clear them until the user re-runs Analyze.
+        rms_frames_.clear();
+        score_frames_.clear();
+        spectrogram_ = {};
+        cleaned_audio_.clear();
+        edited_audio_.clear();
+        edited_cache_dirty_ = true;
+        selected_marker_ = -1;
+        decision_request_index_ = -1;
+        view_start_sec_ = 0.0;
+        view_end_sec_ = (std::min)(30.0, static_cast<double>(audio_.samples.size()) / audio_.sample_rate);
+        playhead_sec_ = 0.0;
+    } catch (const std::exception& ex) {
+        std::cerr << ex.what() << '\n';
+    }
+}
+
 void App::render_toolbar() {
     const bool busy = analyzing_;
 
     if (ImGui::Button("Open", ImVec2(78, 0))) {
         open_audio();
     }
+
+    ImGui::SameLine();
+    ImGui::BeginDisabled(busy);
+    if (ImGui::Button("Load Session", ImVec2(120, 0))) {
+        load_session();
+    }
+    ImGui::EndDisabled();
 
     ImGui::SameLine();
     ImGui::BeginDisabled(!has_audio_ || busy);
@@ -452,8 +561,22 @@ void App::render_toolbar() {
             const double duration = audio_.samples.empty()
                                         ? 0.0
                                         : static_cast<double>(audio_.samples.size()) / audio_.sample_rate;
-            audio_core::export_all_marker_formats(dir, stem, markers_.all(), duration, audio_.sample_rate);
-            markers_.save_json((std::filesystem::path(dir) / (stem + ".markers.json")).string());
+            const auto session = build_session_snapshot();
+            const auto export_markers = audio_core::exportable_markers(session);
+            audio_core::export_all_marker_formats(dir, stem, export_markers, duration, audio_.sample_rate);
+            audio_core::Markers json_markers;
+            json_markers.merge(export_markers);
+            json_markers.save_json((std::filesystem::path(dir) / (stem + ".markers.json")).string());
+        } catch (const std::exception& ex) {
+            std::cerr << ex.what() << '\n';
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Save Session", ImVec2(120, 0))) {
+        try {
+            std::lock_guard<std::mutex> lock(data_mutex_);
+            const auto out = std::filesystem::path(file_path_).replace_extension(".audiotool.json");
+            audio_core::save_session_json(out.string(), build_session_snapshot());
         } catch (const std::exception& ex) {
             std::cerr << ex.what() << '\n';
         }
@@ -464,8 +587,13 @@ void App::render_toolbar() {
         if (!path.empty()) {
             try {
                 std::lock_guard<std::mutex> lock(data_mutex_);
-                const auto& export_audio = cleaned_audio_.empty() ? audio_.samples : cleaned_audio_;
-                audio_core::AudioFile::save_mono(path, export_audio, audio_.sample_rate);
+                // Re-run cleaning over only the non-rejected markers so rejecting
+                // a marker actually excludes its region from the exported audio.
+                const auto session = build_session_snapshot();
+                const auto markers = audio_core::exportable_markers(session);
+                const auto cleaned = audio_core::SpectralCleaner{}.clean(
+                    audio_.samples, audio_.sample_rate, markers, clean_cfg_);
+                audio_core::AudioFile::save_mono(path, cleaned, audio_.sample_rate);
             } catch (const std::exception& ex) {
                 std::cerr << ex.what() << '\n';
             }
@@ -477,8 +605,12 @@ void App::render_toolbar() {
         if (!path.empty()) {
             try {
                 std::lock_guard<std::mutex> lock(data_mutex_);
+                // Only cut non-rejected markers; a rejected marker must never be
+                // physically removed from the exported edit.
+                const auto session = build_session_snapshot();
+                const auto markers = audio_core::exportable_markers(session);
                 const auto edited = audio_core::apply_cuts(audio_.samples, audio_.sample_rate,
-                                                           markers_.all(), edit_cfg_);
+                                                           markers, edit_cfg_);
                 audio_core::AudioFile::save_mono(path, edited.samples, audio_.sample_rate);
             } catch (const std::exception& ex) {
                 std::cerr << ex.what() << '\n';
@@ -521,6 +653,24 @@ void App::render_sidebar(const UiSnapshot& snap) {
     }
     ImGui::EndDisabled();
     ImGui::TextDisabled("Double-click a marker to preview +/- 2s.");
+    const bool can_review = selected_marker_ >= 0 &&
+                            selected_marker_ < static_cast<int>(snap.review.size());
+    ImGui::BeginDisabled(!has_audio_ || !can_review);
+    if (ImGui::Button("Accept", ImVec2(88, 0)) && can_review) {
+        decision_request_index_ = selected_marker_;
+        decision_request_value_ = audio_core::ReviewDecision::Accepted;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reject", ImVec2(88, 0)) && can_review) {
+        decision_request_index_ = selected_marker_;
+        decision_request_value_ = audio_core::ReviewDecision::Rejected;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reset", ImVec2(72, 0)) && can_review) {
+        decision_request_index_ = selected_marker_;
+        decision_request_value_ = audio_core::ReviewDecision::Pending;
+    }
+    ImGui::EndDisabled();
 
     ImGui::Dummy(ImVec2(0, 6));
     ImGui::Separator();
@@ -570,6 +720,13 @@ void App::render_sidebar(const UiSnapshot& snap) {
     };
 
     ImGui::TextDisabled("MARKERS  (%d)", static_cast<int>(snap.markers.all().size()));
+    int accepted = 0;
+    int rejected = 0;
+    for (const auto decision : snap.review) {
+        if (decision == audio_core::ReviewDecision::Accepted) ++accepted;
+        if (decision == audio_core::ReviewDecision::Rejected) ++rejected;
+    }
+    ImGui::TextDisabled("Review: %d accepted, %d rejected", accepted, rejected);
     legend(audio_core::MarkerType::Pause, "Pause");
     ImGui::SameLine(0, 16);
     legend(audio_core::MarkerType::Click, "Click");
@@ -601,6 +758,15 @@ void App::render_sidebar(const UiSnapshot& snap) {
         }
         ImGui::SameLine();
         ImGui::TextDisabled("%.2f-%.2fs", m.start_sec, m.end_sec);
+        if (i < static_cast<int>(snap.review.size())) {
+            ImGui::SameLine();
+            const auto decision = snap.review[static_cast<std::size_t>(i)];
+            if (decision == audio_core::ReviewDecision::Accepted) {
+                ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.55f, 1.0f), "accepted");
+            } else if (decision == audio_core::ReviewDecision::Rejected) {
+                ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "rejected");
+            }
+        }
         ImGui::SameLine(ImGui::GetContentRegionAvail().x - 22);
         if (ImGui::SmallButton(("x##rm" + std::to_string(i)).c_str())) {
             marker_remove_request_ = i;
@@ -780,6 +946,7 @@ void App::render_plots(const UiSnapshot& snap) {
 
 void App::render_ui() {
     UiSnapshot snap;
+    int preview_request = -1;
     {
         std::lock_guard<std::mutex> lock(data_mutex_);
         if (marker_remove_request_ >= 0 &&
@@ -788,22 +955,40 @@ void App::render_ui() {
             updated.erase(updated.begin() + marker_remove_request_);
             markers_ = {};
             markers_.merge(updated);
+            if (marker_remove_request_ < static_cast<int>(review_decisions_.size())) {
+                review_decisions_.erase(review_decisions_.begin() + marker_remove_request_);
+            }
+            if (selected_marker_ >= static_cast<int>(markers_.all().size())) {
+                selected_marker_ = static_cast<int>(markers_.all().size()) - 1;
+            }
             edited_cache_dirty_ = true;
         }
         marker_remove_request_ = -1;
-        if (preview_marker_request_ >= 0) {
-            preview_marker_at(preview_marker_request_);
-        }
+        preview_request = preview_marker_request_;
         preview_marker_request_ = -1;
+
+        // Apply any pending review-decision change under the lock so it can never
+        // race the analysis thread, which reassigns review_decisions_ wholesale.
+        if (decision_request_index_ >= 0 &&
+            decision_request_index_ < static_cast<int>(review_decisions_.size())) {
+            review_decisions_[static_cast<std::size_t>(decision_request_index_)] =
+                decision_request_value_;
+            edited_cache_dirty_ = true;
+        }
+        decision_request_index_ = -1;
 
         snap.audio = audio_;
         snap.markers = markers_;
         snap.rms = rms_frames_;
         snap.scores = score_frames_;
+        snap.review = review_decisions_;
         snap.spec = spectrogram_;
         snap.duration = audio_.samples.empty()
                             ? 0.0
                             : static_cast<double>(audio_.samples.size()) / audio_.sample_rate;
+    }
+    if (preview_request >= 0) {
+        preview_marker_at(preview_request);
     }
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();

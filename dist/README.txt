@@ -29,10 +29,13 @@ Open a terminal in this folder, then e.g.:
 
   audio_tool_cli.exe analyze "C:\path\to\episode.mp3"
   audio_tool_cli.exe batch "C:\path\to\folder" --out-dir out --cut pauses -r
+  audio_tool_cli.exe watch "C:\path\to\inbox" --out-dir prepared --export-markers all
   audio_tool_cli.exe help
 
 The CLI never modifies your source files - results go to a separate
 output folder (default: <input>\audio-tool-out).
+Watch mode writes .audiotool session files, reports, pro-editor marker
+sidecars, and a watch-state.json dedupe file.
 
 USING IT
 --------
@@ -43,6 +46,10 @@ USING IT
 5. Use the sidebar to tune detector sensitivity and review markers.
 6. Export markers (all pro-editor formats), labels, cleaned WAV, or edited (cut) WAV.
 7. Use Playback Source (Original / Cleaned / Edited) and double-click a marker to preview +/- 2s.
+8. Accept/reject markers and save a .audiotool.json session for later review.
+9. Click "Load Session" to reopen a saved .audiotool.json - it restores the
+   source audio, detector settings, markers, and your accept/reject decisions.
+   Rejected markers are excluded from every export (sidecars, cleaned, edited).
 
 MORE INFO
 ---------
