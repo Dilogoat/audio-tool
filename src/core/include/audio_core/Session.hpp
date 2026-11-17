@@ -46,9 +46,14 @@ std::vector<Marker> markers_with_decision(const Session& session, ReviewDecision
 std::vector<Marker> exportable_markers(const Session& session);
 
 // Copies review decisions/notes from a previously saved session onto a freshly
-// built one, matching markers by type and timing. Lets re-runs (GUI or CLI)
-// preserve a human's accept/reject choices instead of resetting to Pending.
-// Returns the number of markers whose decision was carried over.
-int merge_decisions(Session& target, const Session& source);
+// built one. Markers are matched one-to-one by type and best time overlap
+// (intersection over union >= 0.5), so small boundary shifts from a threshold
+// tweak keep their decisions. Returns the number carried over; if `unmatched`
+// is given it receives the number of reviewed source markers with no match
+// (their decisions would be lost by overwriting the source session).
+int merge_decisions(Session& target, const Session& source, int* unmatched = nullptr);
+
+// True if any marker has a non-pending decision or a note.
+bool has_review_work(const Session& session);
 
 }  // namespace audio_core

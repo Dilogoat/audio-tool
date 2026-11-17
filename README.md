@@ -14,7 +14,7 @@ Native C++ desktop application and CLI for detecting non-speech artifacts in lon
 |------|----------------|
 | **Detection** | Pause (RMS), click/plosive (transient), breath (spectral HF) |
 | **Visualization** | Waveform, RMS envelope, composite heatmap, spectrogram (ImGui + ImPlot) |
-| **Remediation** | Spectral attenuation (`--clean`) or physical cut + crossfade (`--cut`) |
+| **Remediation** | Attenuation of breaths/clicks (`--clean`) or physical cut + crossfade (`--cut`) |
 | **Export** | JSON markers, pro-editor sidecars (CSV, EDL, FCP XML, Reaper, Audition, Audacity), cleaned/edited WAV |
 | **Batch** | Headless CLI with presets, logging, JSON reports, recursive folders |
 | **Safety** | Source files are never modified — all outputs go to a separate folder |
@@ -25,7 +25,7 @@ Native C++ desktop application and CLI for detecting non-speech artifacts in lon
 
 `WAV` · `MP3` · `FLAC` · `OGG` · `Opus` · `AIFF` · `CAF` · `W64` / `RF64`
 
-**Export** (analysis outputs): lossless `WAV` (cleaned / edited), plus JSON and label sidecars.
+**Export** (analysis outputs): mono 16-bit PCM `WAV` (cleaned / edited) at the source sample rate, plus JSON and label sidecars. Multi-channel sources are mixed down to mono for analysis and for these audio outputs.
 
 > MP3 and Opus decoding require the `mpeg` and `external-libs` libsndfile features — already enabled in `vcpkg.json`.
 
@@ -91,7 +91,8 @@ For input `<name>.<ext>` (written to the output folder, never over the source):
 |------|------|
 | `<name>.markers.json` | Always |
 | `<name>.report.json` | Always |
-| `<name>.audiotool.json` | Always; session (markers + review decisions + config), reopen via the GUI **Load Session** button. Re-runs carry over prior accept/reject decisions |
+| `<name>.audiotool.json` | Always; session (markers + review decisions + config), reopen via the GUI **Load Session** button. Re-runs carry over prior accept/reject decisions to markers that still overlap (same type, at least 50% overlap) |
+| `<name>.audiotool.<timestamp>.bak.json` | Written before a re-run overwrites a session whose reviewed markers no longer all match a detection, so no review work is lost |
 | `<name>.cleaned.wav` | `--clean` |
 | `<name>.edited.wav` | `--cut` |
 | `<name>.labels.txt` | `--labels` |
@@ -107,7 +108,11 @@ For input `<name>.<ext>` (written to the output folder, never over the source):
 
 `--out-dir` · `--config` · `--clean` · `--cut <pauses,clicks,breaths>` · `--crossfade-ms` · `--labels` · `--export-markers <all|csv,edl,...>` · `--once` · `--poll-ms` · `--settle-ms` · `-r/--recursive` · `--force` · `--dry-run` · `--no-pauses/--no-clicks/--no-breaths` · `--log-level` · `--log-file`
 
-`--clean` attenuates artifacts in place (same length). `--cut` removes flagged regions and crossfades joins (shorter file).
+`--clean` attenuates breath and click regions in place (same length) by `clean.attenuation`, with `clean.ramp_ms` fades just outside each region. `--cut` removes flagged regions and crossfades joins (shorter file).
+
+With `-r/--recursive`, outputs mirror the input subfolders under the output folder (`in/a/ep.wav` -> `out/a/ep.*`). Inputs that would still share a name in one output folder (`ep.wav` + `ep.mp3`) get the extension appended: `ep_wav.*`, `ep_mp3.*`. Scans never descend into the output folder, so rendered WAVs are not picked up as new inputs.
+
+Marker timecodes default to 29.97 fps non-drop-frame (FCP XML declares timebase 30 + NTSC). The EDL includes DaVinci Resolve `|C: |M: |D:` marker lines; the Audition list is tab-separated as Audition expects.
 
 `watch` is the service-mode foundation: run it in a terminal, Task Scheduler, or a service wrapper. It waits for files to settle before processing and writes a state file so unchanged recordings are not processed twice.
 

@@ -15,6 +15,8 @@
 #include "audio_core/detectors/TransientDetector.hpp"
 
 #include <atomic>
+#include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -45,7 +47,6 @@ private:
     void start_playback();
     void start_playback_segment(double start_sec, double end_sec);
     void stop_playback();
-    void rebuild_edited_cache();
     void preview_marker_at(int index);
     audio_core::Session build_session_snapshot() const;
     audio_core::PipelineConfig current_config() const;
@@ -54,17 +55,33 @@ private:
 
     GLFWwindow* window_ = nullptr;
     std::string file_path_;
-    audio_core::AudioData audio_;
+    // Immutable once loaded and shared by pointer, so the UI snapshot, the
+    // analysis thread and playback never deep-copy the whole recording.
+    std::shared_ptr<const audio_core::AudioData> audio_ = std::make_shared<audio_core::AudioData>();
+    // Bumped whenever a new file or session is loaded; background work started
+    // against an older generation discards its results.
+    std::uint64_t audio_generation_ = 0;
     audio_core::Markers markers_;
     std::vector<audio_core::ReviewDecision> review_decisions_;
     std::vector<audio_core::RmsFrame> rms_frames_;
     std::vector<audio_core::ScoreFrame> score_frames_;
-    audio_core::Spectrogram spectrogram_;
-    std::vector<float> cleaned_audio_;
-    std::vector<float> edited_audio_;
+    // Display-only spectrogram, decimated to a fixed size at analysis time.
+    struct SpectrogramImage {
+        std::vector<float> values;  // column-major, row 0 = highest frequency band
+        int rows = 0;
+        int cols = 0;
+        double col_sec = 0.0;  // duration covered by one column
+        double max_hz = 0.0;
+        float min_v = 0.0f;
+        float max_v = 1.0f;
+    };
+    std::shared_ptr<const SpectrogramImage> spectrogram_;
+    static std::shared_ptr<const SpectrogramImage> build_spectrogram_image(const audio_core::AudioData& audio);
+    std::shared_ptr<const std::vector<float>> edited_audio_;
+    std::string status_error_;
 
     bool has_audio_ = false;
-    bool analyzing_ = false;
+    std::atomic<bool> analyzing_{false};
     bool edited_cache_dirty_ = true;
     std::thread analysis_thread_;
     std::mutex data_mutex_;

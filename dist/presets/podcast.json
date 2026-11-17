@@ -30,6 +30,6 @@
   },
   "clean": {
     "attenuation": 0.15,
-    "speech_floor_db": -40.0
+    "ramp_ms": 5.0
   }
 }

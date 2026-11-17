@@ -1,4 +1,6 @@
 #include "catch_common.hpp"
+#include <cmath>
+#include <complex>
 
 #include "audio_core/Framing.hpp"
 #include "audio_core/Stft.hpp"
@@ -33,4 +35,22 @@ TEST_CASE("STFT round trip preserves energy approximately", "[stft]") {
     }
     REQUIRE(out_energy > 0.0);
     REQUIRE(out_energy / in_energy == Approx(1.0).margin(0.35));
+}
+
+TEST_CASE("for_each_frame streams the same frames forward() stores", "[stft]") {
+    const int sr = 16000;
+    std::vector<float> samples(5000);
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+        samples[i] = static_cast<float>(std::sin(0.01 * static_cast<double>(i)));
+    }
+    audio_core::Stft stft(sr, 512, 128);
+    const auto spec = stft.forward(samples);
+    std::size_t n = 0;
+    stft.for_each_frame(samples, [&](std::size_t start, const std::vector<std::complex<double>>& bins) {
+        REQUIRE(n < spec.frames.size());
+        REQUIRE(static_cast<double>(start) / sr == Approx(spec.frame_times[n]));
+        REQUIRE(std::abs(bins[10] - spec.frames[n][10]) < 1e-9);
+        ++n;
+    });
+    REQUIRE(n == spec.frames.size());
 }

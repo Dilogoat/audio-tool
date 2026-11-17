@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -200,25 +201,80 @@ std::vector<Marker> exportable_markers(const Session& session) {
     return out;
 }
 
-int merge_decisions(Session& target, const Session& source) {
-    constexpr double kEps = 1e-6;
-    int carried = 0;
-    for (auto& tgt : target.markers) {
-        for (const auto& src : source.markers) {
-            if (src.decision == ReviewDecision::Pending && src.note.empty()) {
+namespace {
+
+double overlap_ratio(const Marker& a, const Marker& b) {
+    const double inter = (std::min)(a.end_sec, b.end_sec) - (std::max)(a.start_sec, b.start_sec);
+    if (inter <= 0.0) {
+        return 0.0;
+    }
+    const double uni = (std::max)(a.end_sec, b.end_sec) - (std::min)(a.start_sec, b.start_sec);
+    return uni > 0.0 ? inter / uni : 0.0;
+}
+
+}  // namespace
+
+int merge_decisions(Session& target, const Session& source, int* unmatched) {
+    // Match each reviewed source marker to the same-type target marker it
+    // overlaps most (intersection over union >= kMinOverlap), one-to-one.
+    // Exact-time matching dropped every decision as soon as a threshold change
+    // nudged marker boundaries.
+    constexpr double kMinOverlap = 0.5;
+
+    struct Candidate {
+        double score;
+        std::size_t src;
+        std::size_t tgt;
+    };
+    std::vector<Candidate> candidates;
+    int reviewed = 0;
+    for (std::size_t si = 0; si < source.markers.size(); ++si) {
+        const auto& src = source.markers[si];
+        if (src.decision == ReviewDecision::Pending && src.note.empty()) {
+            continue;
+        }
+        ++reviewed;
+        for (std::size_t ti = 0; ti < target.markers.size(); ++ti) {
+            const auto& tgt = target.markers[ti];
+            if (tgt.marker.type != src.marker.type) {
                 continue;
             }
-            if (src.marker.type == tgt.marker.type &&
-                std::fabs(src.marker.start_sec - tgt.marker.start_sec) < kEps &&
-                std::fabs(src.marker.end_sec - tgt.marker.end_sec) < kEps) {
-                tgt.decision = src.decision;
-                tgt.note = src.note;
-                ++carried;
-                break;
+            const double score = overlap_ratio(src.marker, tgt.marker);
+            if (score >= kMinOverlap) {
+                candidates.push_back({score, si, ti});
             }
         }
     }
+
+    std::stable_sort(candidates.begin(), candidates.end(),
+                     [](const Candidate& a, const Candidate& b) { return a.score > b.score; });
+    std::vector<bool> src_used(source.markers.size(), false);
+    std::vector<bool> tgt_used(target.markers.size(), false);
+    int carried = 0;
+    for (const auto& c : candidates) {
+        if (src_used[c.src] || tgt_used[c.tgt]) {
+            continue;
+        }
+        src_used[c.src] = true;
+        tgt_used[c.tgt] = true;
+        target.markers[c.tgt].decision = source.markers[c.src].decision;
+        target.markers[c.tgt].note = source.markers[c.src].note;
+        ++carried;
+    }
+
+    if (unmatched) {
+        *unmatched = reviewed - carried;
+    }
     return carried;
+}
+
+bool has_review_work(const Session& session) {
+    for (const auto& item : session.markers) {
+        if (item.decision != ReviewDecision::Pending || !item.note.empty()) {
+            return true;
+        }
+    }
+    return false;
 }
 
 }  // namespace audio_core

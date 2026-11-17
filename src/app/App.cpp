@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
@@ -169,6 +170,66 @@ void apply_theme() {
 
 App::App() = default;
 
+// Builds a fixed-size, display-only spectrogram (at most kCols x kRows cells)
+// by streaming STFT frames, so neither memory nor per-frame draw cost grows
+// with recording length.
+std::shared_ptr<const App::SpectrogramImage> App::build_spectrogram_image(const audio_core::AudioData& audio) {
+    constexpr int kFft = 2048;
+    constexpr int kHop = 512;
+    constexpr int kRows = 128;
+    constexpr std::size_t kMaxCols = 2048;
+
+    auto img = std::make_shared<SpectrogramImage>();
+    if (audio.samples.empty() || audio.sample_rate <= 0) {
+        return img;
+    }
+    const std::size_t frames = (audio.samples.size() + kHop - 1) / kHop;
+    const std::size_t per_col = (std::max<std::size_t>)(1, (frames + kMaxCols - 1) / kMaxCols);
+    const int cols = static_cast<int>((frames + per_col - 1) / per_col);
+    const int bins = kFft / 2 + 1;
+    const int bins_per_row = (bins + kRows - 1) / kRows;
+
+    img->rows = kRows;
+    img->cols = cols;
+    img->col_sec = static_cast<double>(per_col * kHop) / audio.sample_rate;
+    img->max_hz = audio.sample_rate / 2.0;
+    img->values.assign(static_cast<std::size_t>(cols) * kRows, 0.0f);
+
+    std::vector<double> acc(kRows, 0.0);
+    std::size_t frame_index = 0;
+    auto flush_col = [&](std::size_t col, std::size_t count) {
+        for (int r = 0; r < kRows; ++r) {
+            const double mean = acc[static_cast<std::size_t>(r)] / (static_cast<double>(count) * bins_per_row);
+            // Row 0 is drawn at the top, so store the highest band first.
+            img->values[col * kRows + static_cast<std::size_t>(kRows - 1 - r)] =
+                static_cast<float>(std::log10(1e-9 + mean));
+            acc[static_cast<std::size_t>(r)] = 0.0;
+        }
+    };
+
+    audio_core::Stft stft(audio.sample_rate, kFft, kHop);
+    stft.for_each_frame(audio.samples, [&](std::size_t, const std::vector<std::complex<double>>& frame) {
+        for (int b = 0; b < bins; ++b) {
+            acc[static_cast<std::size_t>(b / bins_per_row)] += std::abs(frame[static_cast<std::size_t>(b)]);
+        }
+        ++frame_index;
+        if (frame_index % per_col == 0) {
+            flush_col(frame_index / per_col - 1, per_col);
+        }
+    });
+    if (frame_index % per_col != 0) {
+        flush_col(frame_index / per_col, frame_index % per_col);
+    }
+
+    // Colour scale from robust percentiles so a single loud transient does not
+    // wash out the whole image.
+    std::vector<float> sorted = img->values;
+    std::sort(sorted.begin(), sorted.end());
+    img->min_v = sorted[sorted.size() / 50];
+    img->max_v = (std::max)(img->min_v + 1e-3f, sorted[sorted.size() - 1 - sorted.size() / 200]);
+    return img;
+}
+
 App::~App() { shutdown(); }
 
 bool App::init() {
@@ -229,58 +290,76 @@ void App::run_analysis() {
         return;
     }
 
-    analyzing_ = true;
     if (analysis_thread_.joinable()) {
         analysis_thread_.join();
     }
 
-    analysis_thread_ = std::thread([this]() {
-        audio_core::AudioData local_audio;
-        {
+    // Everything the worker needs is captured here on the UI thread: the
+    // sliders write the *_cfg_ members without a lock, so the worker must not
+    // read them, and the prior session carries the user's review decisions.
+    const audio_core::PipelineConfig cfg = current_config();
+    std::shared_ptr<const audio_core::AudioData> audio;
+    audio_core::Session prior;
+    std::uint64_t generation = 0;
+    {
+        std::lock_guard<std::mutex> lock(data_mutex_);
+        audio = audio_;
+        prior = build_session_snapshot();
+        generation = audio_generation_;
+        status_error_.clear();
+    }
+
+    analyzing_ = true;
+    analysis_thread_ = std::thread([this, cfg, audio, prior = std::move(prior), generation]() {
+        try {
+            // Shared detection path (identical to the CLI).
+            audio_core::Pipeline pipeline(cfg);
+            auto result = pipeline.analyze(*audio, false);
+
+            // Re-analysis keeps accept/reject decisions on markers that still
+            // match (same type, overlapping in time) instead of resetting them.
+            auto session = audio_core::make_session(prior.source_path, result, audio->sample_rate, cfg);
+            int unmatched = 0;
+            audio_core::merge_decisions(session, prior, &unmatched);
+
+            // RMS envelope and spectrogram are computed here for display only.
+            const int rms_window = (std::max)(1, audio->sample_rate / 20);
+            audio_core::RmsAnalyzer rms(audio->sample_rate, rms_window, (std::max)(1, rms_window / 2));
+            auto rms_data = rms.analyze(audio->samples);
+            auto spec = build_spectrogram_image(*audio);
+
             std::lock_guard<std::mutex> lock(data_mutex_);
-            local_audio = audio_;
-        }
-
-        // Shared detection path (identical to the CLI).
-        audio_core::Pipeline pipeline(current_config());
-        auto result = pipeline.analyze(local_audio, true);
-
-        // RMS envelope and spectrogram are computed here for display only.
-        audio_core::RmsAnalyzer rms(local_audio.sample_rate, local_audio.sample_rate / 20,
-                                    local_audio.sample_rate / 40);
-        const auto rms_data = rms.analyze(local_audio.samples);
-
-        audio_core::Stft stft(local_audio.sample_rate, 2048, 512);
-        const auto spec = stft.forward(local_audio.samples);
-
-        {
+            if (generation != audio_generation_) {
+                // A different file was loaded while we worked; drop the results.
+            } else {
+                markers_ = std::move(result.markers);
+                review_decisions_.clear();
+                review_decisions_.reserve(session.markers.size());
+                for (const auto& sm : session.markers) {
+                    review_decisions_.push_back(sm.decision);
+                }
+                rms_frames_ = std::move(rms_data);
+                score_frames_ = std::move(result.scores);
+                spectrogram_ = std::move(spec);
+                edited_cache_dirty_ = true;
+                edited_audio_.reset();
+                selected_marker_ = -1;
+                if (unmatched > 0) {
+                    status_error_ = std::to_string(unmatched) +
+                                    " reviewed marker(s) no longer match a detection and were dropped";
+                }
+            }
+        } catch (const std::exception& ex) {
+            // An exception escaping a std::thread calls std::terminate and
+            // closes the app; report it instead.
             std::lock_guard<std::mutex> lock(data_mutex_);
-            markers_ = std::move(result.markers);
-            review_decisions_.assign(markers_.all().size(), audio_core::ReviewDecision::Pending);
-            rms_frames_ = std::move(rms_data);
-            score_frames_ = std::move(result.scores);
-            spectrogram_ = std::move(spec);
-            cleaned_audio_ = std::move(result.cleaned);
-            edited_cache_dirty_ = true;
-            edited_audio_.clear();
+            status_error_ = std::string("Analysis failed: ") + ex.what();
+        } catch (...) {
+            std::lock_guard<std::mutex> lock(data_mutex_);
+            status_error_ = "Analysis failed";
         }
-
         analyzing_ = false;
     });
-}
-
-void App::rebuild_edited_cache() {
-    std::lock_guard<std::mutex> lock(data_mutex_);
-    if (!has_audio_) {
-        edited_audio_.clear();
-        edited_cache_dirty_ = false;
-        return;
-    }
-    const auto session = build_session_snapshot();
-    const auto markers = audio_core::exportable_markers(session);
-    const auto edited = audio_core::apply_cuts(audio_.samples, audio_.sample_rate, markers, edit_cfg_);
-    edited_audio_ = std::move(edited.samples);
-    edited_cache_dirty_ = false;
 }
 
 void App::start_playback_segment(double start_sec, double end_sec) {
@@ -288,62 +367,90 @@ void App::start_playback_segment(double start_sec, double end_sec) {
         return;
     }
     stop_playback();
+
+    // Capture inputs on the UI thread (config members are UI-owned), then do
+    // all rendering work on the playback thread without holding data_mutex_,
+    // so previews never freeze the UI.
+    std::shared_ptr<const audio_core::AudioData> audio;
+    std::shared_ptr<const std::vector<float>> edited_cache;
+    std::vector<audio_core::Marker> markers;
+    bool edited_dirty = true;
+    std::uint64_t generation = 0;
+    const PlaybackSource source_kind = playback_source_;
+    const audio_core::CleanConfig clean_cfg = clean_cfg_;
+    const audio_core::EditConfig edit_cfg = edit_cfg_;
+    {
+        std::lock_guard<std::mutex> lock(data_mutex_);
+        audio = audio_;
+        edited_cache = edited_audio_;
+        edited_dirty = edited_cache_dirty_ || !edited_audio_;
+        markers = audio_core::exportable_markers(build_session_snapshot());
+        generation = audio_generation_;
+    }
+
     playhead_sec_ = start_sec;
     playing_ = true;
 
-    if (playback_thread_.joinable()) {
-        playback_thread_.join();
-    }
-
-    playback_thread_ = std::thread([this, start_sec, end_sec]() {
-        audio_core::AudioData local;
-        std::vector<float> source;
-        int sample_rate = 44100;
-        {
-            std::lock_guard<std::mutex> lock(data_mutex_);
-            local = audio_;
-            sample_rate = local.sample_rate;
-            if (playback_source_ == PlaybackSource::Cleaned) {
-                const auto session = build_session_snapshot();
-                const auto markers = audio_core::exportable_markers(session);
-                source = audio_core::SpectralCleaner{}.clean(local.samples, local.sample_rate,
-                                                             markers, clean_cfg_);
-            } else if (playback_source_ == PlaybackSource::Edited) {
-                if (edited_cache_dirty_) {
-                    const auto session = build_session_snapshot();
-                    const auto markers = audio_core::exportable_markers(session);
-                    const auto edited = audio_core::apply_cuts(local.samples, local.sample_rate,
-                                                               markers, edit_cfg_);
-                    edited_audio_ = edited.samples;
+    playback_thread_ = std::thread([this, start_sec, end_sec, audio, edited_cache, markers, edited_dirty,
+                                    generation, source_kind, clean_cfg, edit_cfg]() {
+        const int sample_rate = audio->sample_rate;
+        const std::vector<float>* source = &audio->samples;
+        std::shared_ptr<const std::vector<float>> edited = edited_cache;
+        if (source_kind == PlaybackSource::Edited) {
+            if (edited_dirty) {
+                auto rendered = audio_core::apply_cuts(audio->samples, sample_rate, markers, edit_cfg);
+                edited = std::make_shared<const std::vector<float>>(std::move(rendered.samples));
+                std::lock_guard<std::mutex> lock(data_mutex_);
+                if (generation == audio_generation_) {
+                    edited_audio_ = edited;
                     edited_cache_dirty_ = false;
                 }
-                source = edited_audio_.empty() ? local.samples : edited_audio_;
-            } else {
-                source = local.samples;
+            }
+            if (edited && !edited->empty()) {
+                source = edited.get();
             }
         }
 
-        const double duration = source.empty() ? 0.0 : static_cast<double>(source.size()) / sample_rate;
+        const double duration = source->empty() ? 0.0 : static_cast<double>(source->size()) / sample_rate;
         const double clip_start = (std::max)(0.0, start_sec);
         const double clip_end = (std::min)(duration, end_sec);
-        if (clip_end <= clip_start || source.empty()) {
+        if (clip_end <= clip_start || source->empty()) {
             playing_ = false;
             return;
         }
 
-        const int start_sample = static_cast<int>(clip_start * sample_rate);
-        const int end_sample = static_cast<int>(clip_end * sample_rate);
-        std::vector<float> segment(source.begin() + start_sample,
-                                   source.begin() + (std::min)(end_sample, static_cast<int>(source.size())));
+        const std::size_t start_sample = static_cast<std::size_t>(clip_start * sample_rate);
+        const std::size_t end_sample =
+            (std::min)(static_cast<std::size_t>(clip_end * sample_rate), source->size());
+        std::vector<float> segment(source->begin() + static_cast<std::ptrdiff_t>(start_sample),
+                                   source->begin() + static_cast<std::ptrdiff_t>(end_sample));
+
+        if (source_kind == PlaybackSource::Cleaned) {
+            // The cleaner is a local time-domain gain, so cleaning just the
+            // previewed span gives the same audio as cleaning the whole file.
+            std::vector<audio_core::Marker> local = markers;
+            for (auto& m : local) {
+                m.start_sec -= clip_start;
+                m.end_sec -= clip_start;
+            }
+            segment = audio_core::SpectralCleaner{}.clean(segment, sample_rate, local, clean_cfg);
+        }
 
         PaStream* stream = nullptr;
-        Pa_OpenDefaultStream(&stream, 0, 1, paFloat32, sample_rate, paFramesPerBufferUnspecified, nullptr, nullptr);
+        if (Pa_OpenDefaultStream(&stream, 0, 1, paFloat32, sample_rate, paFramesPerBufferUnspecified, nullptr,
+                                 nullptr) != paNoError ||
+            !stream) {
+            std::lock_guard<std::mutex> lock(data_mutex_);
+            status_error_ = "Audio output could not be opened at " + std::to_string(sample_rate) + " Hz";
+            playing_ = false;
+            return;
+        }
         Pa_StartStream(stream);
 
         std::size_t offset = 0;
-        const int chunk = 1024;
+        const std::size_t chunk = 1024;
         while (playing_ && offset < segment.size()) {
-            const auto count = (std::min<std::size_t>)(chunk, segment.size() - offset);
+            const auto count = (std::min)(chunk, segment.size() - offset);
             Pa_WriteStream(stream, segment.data() + offset, static_cast<unsigned long>(count));
             offset += count;
             playhead_sec_ = clip_start + static_cast<double>(offset) / sample_rate;
@@ -359,10 +466,9 @@ void App::start_playback() {
     if (!has_audio_ || playing_) {
         return;
     }
-    const double end = static_cast<double>(audio_.samples.size()) / audio_.sample_rate;
+    const double end = static_cast<double>(audio_->samples.size()) / audio_->sample_rate;
     start_playback_segment(playhead_sec_.load(), end);
 }
-
 void App::preview_marker_at(int index) {
     std::vector<audio_core::Marker> local_markers;
     double duration = 0.0;
@@ -372,9 +478,9 @@ void App::preview_marker_at(int index) {
             return;
         }
         local_markers = markers_.all();
-        duration = audio_.samples.empty()
+        duration = audio_->samples.empty()
                        ? 0.0
-                       : static_cast<double>(audio_.samples.size()) / audio_.sample_rate;
+                       : static_cast<double>(audio_->samples.size()) / audio_->sample_rate;
     }
     const auto& m = local_markers[static_cast<std::size_t>(index)];
     const double pre = 2.0;
@@ -400,10 +506,10 @@ audio_core::PipelineConfig App::current_config() const {
 audio_core::Session App::build_session_snapshot() const {
     audio_core::Session session;
     session.source_path = file_path_;
-    session.duration_sec = audio_.samples.empty()
+    session.duration_sec = audio_->samples.empty()
                                ? 0.0
-                               : static_cast<double>(audio_.samples.size()) / audio_.sample_rate;
-    session.sample_rate = audio_.sample_rate;
+                               : static_cast<double>(audio_->samples.size()) / audio_->sample_rate;
+    session.sample_rate = audio_->sample_rate;
     session.config = current_config();
     const auto& all = markers_.all();
     session.markers.reserve(all.size());
@@ -424,12 +530,13 @@ void App::stop_playback() {
 }
 
 struct App::UiSnapshot {
-    audio_core::AudioData audio;
+    // Shared pointers, not copies: this snapshot is rebuilt every frame.
+    std::shared_ptr<const audio_core::AudioData> audio;
     audio_core::Markers markers;
     std::vector<audio_core::RmsFrame> rms;
     std::vector<audio_core::ScoreFrame> scores;
     std::vector<audio_core::ReviewDecision> review;
-    audio_core::Spectrogram spec;
+    std::shared_ptr<const SpectrogramImage> spec;
     double duration = 0.0;
 };
 
@@ -438,24 +545,30 @@ void App::open_audio() {
     if (path.empty()) {
         return;
     }
+    stop_playback();
     try {
+        // Decode outside the lock; only the swap needs it.
+        auto loaded = std::make_shared<const audio_core::AudioData>(audio_core::AudioFile::load(path));
         std::lock_guard<std::mutex> lock(data_mutex_);
         file_path_ = path;
-        audio_ = audio_core::AudioFile::load(path);
+        audio_ = std::move(loaded);
+        ++audio_generation_;
         has_audio_ = true;
         markers_ = {};
         review_decisions_.clear();
         rms_frames_.clear();
         score_frames_.clear();
-        spectrogram_ = {};
-        cleaned_audio_.clear();
-        edited_audio_.clear();
+        spectrogram_.reset();
+        edited_audio_.reset();
         edited_cache_dirty_ = true;
+        selected_marker_ = -1;
+        status_error_.clear();
         view_start_sec_ = 0.0;
-        view_end_sec_ = (std::min)(30.0, static_cast<double>(audio_.samples.size()) / audio_.sample_rate);
+        view_end_sec_ = (std::min)(30.0, static_cast<double>(audio_->samples.size()) / audio_->sample_rate);
         playhead_sec_ = 0.0;
     } catch (const std::exception& ex) {
-        std::cerr << ex.what() << '\n';
+        std::lock_guard<std::mutex> lock(data_mutex_);
+        status_error_ = std::string("Could not open file: ") + ex.what();
     }
 }
 
@@ -469,12 +582,15 @@ void App::load_session() {
         const auto session = audio_core::load_session_json(path);
         // Load the referenced source audio before mutating any state, so a
         // moved/missing source leaves the current session untouched.
-        audio_core::AudioData loaded = audio_core::AudioFile::load(session.source_path);
+        auto loaded = std::make_shared<const audio_core::AudioData>(
+            audio_core::AudioFile::load(session.source_path));
 
         std::lock_guard<std::mutex> lock(data_mutex_);
         file_path_ = session.source_path;
         audio_ = std::move(loaded);
+        ++audio_generation_;
         has_audio_ = true;
+        status_error_.clear();
 
         pause_cfg_ = session.config.pause;
         transient_cfg_ = session.config.transient;
@@ -500,26 +616,28 @@ void App::load_session() {
         // not persisted in the session; clear them until the user re-runs Analyze.
         rms_frames_.clear();
         score_frames_.clear();
-        spectrogram_ = {};
-        cleaned_audio_.clear();
-        edited_audio_.clear();
+        spectrogram_.reset();
+        edited_audio_.reset();
         edited_cache_dirty_ = true;
         selected_marker_ = -1;
         decision_request_index_ = -1;
         view_start_sec_ = 0.0;
-        view_end_sec_ = (std::min)(30.0, static_cast<double>(audio_.samples.size()) / audio_.sample_rate);
+        view_end_sec_ = (std::min)(30.0, static_cast<double>(audio_->samples.size()) / audio_->sample_rate);
         playhead_sec_ = 0.0;
     } catch (const std::exception& ex) {
-        std::cerr << ex.what() << '\n';
+        std::lock_guard<std::mutex> lock(data_mutex_);
+        status_error_ = std::string("Could not load session: ") + ex.what();
     }
 }
 
 void App::render_toolbar() {
     const bool busy = analyzing_;
 
+    ImGui::BeginDisabled(busy);
     if (ImGui::Button("Open", ImVec2(78, 0))) {
         open_audio();
     }
+    ImGui::EndDisabled();
 
     ImGui::SameLine();
     ImGui::BeginDisabled(busy);
@@ -558,17 +676,18 @@ void App::render_toolbar() {
             std::lock_guard<std::mutex> lock(data_mutex_);
             const auto stem = std::filesystem::path(file_path_).stem().string();
             const auto dir = std::filesystem::path(file_path_).parent_path().string();
-            const double duration = audio_.samples.empty()
+            const double duration = audio_->samples.empty()
                                         ? 0.0
-                                        : static_cast<double>(audio_.samples.size()) / audio_.sample_rate;
+                                        : static_cast<double>(audio_->samples.size()) / audio_->sample_rate;
             const auto session = build_session_snapshot();
             const auto export_markers = audio_core::exportable_markers(session);
-            audio_core::export_all_marker_formats(dir, stem, export_markers, duration, audio_.sample_rate);
+            audio_core::export_all_marker_formats(dir, stem, export_markers, duration, audio_->sample_rate);
             audio_core::Markers json_markers;
             json_markers.merge(export_markers);
             json_markers.save_json((std::filesystem::path(dir) / (stem + ".markers.json")).string());
         } catch (const std::exception& ex) {
-            std::cerr << ex.what() << '\n';
+            std::lock_guard<std::mutex> err_lock(data_mutex_);
+            status_error_ = ex.what();
         }
     }
     ImGui::SameLine();
@@ -578,7 +697,8 @@ void App::render_toolbar() {
             const auto out = std::filesystem::path(file_path_).replace_extension(".audiotool.json");
             audio_core::save_session_json(out.string(), build_session_snapshot());
         } catch (const std::exception& ex) {
-            std::cerr << ex.what() << '\n';
+            std::lock_guard<std::mutex> err_lock(data_mutex_);
+            status_error_ = ex.what();
         }
     }
     ImGui::SameLine();
@@ -592,10 +712,11 @@ void App::render_toolbar() {
                 const auto session = build_session_snapshot();
                 const auto markers = audio_core::exportable_markers(session);
                 const auto cleaned = audio_core::SpectralCleaner{}.clean(
-                    audio_.samples, audio_.sample_rate, markers, clean_cfg_);
-                audio_core::AudioFile::save_mono(path, cleaned, audio_.sample_rate);
+                    audio_->samples, audio_->sample_rate, markers, clean_cfg_);
+                audio_core::AudioFile::save_mono(path, cleaned, audio_->sample_rate);
             } catch (const std::exception& ex) {
-                std::cerr << ex.what() << '\n';
+                std::lock_guard<std::mutex> err_lock(data_mutex_);
+            status_error_ = ex.what();
             }
         }
     }
@@ -609,11 +730,12 @@ void App::render_toolbar() {
                 // physically removed from the exported edit.
                 const auto session = build_session_snapshot();
                 const auto markers = audio_core::exportable_markers(session);
-                const auto edited = audio_core::apply_cuts(audio_.samples, audio_.sample_rate,
+                const auto edited = audio_core::apply_cuts(audio_->samples, audio_->sample_rate,
                                                            markers, edit_cfg_);
-                audio_core::AudioFile::save_mono(path, edited.samples, audio_.sample_rate);
+                audio_core::AudioFile::save_mono(path, edited.samples, audio_->sample_rate);
             } catch (const std::exception& ex) {
-                std::cerr << ex.what() << '\n';
+                std::lock_guard<std::mutex> err_lock(data_mutex_);
+            status_error_ = ex.what();
             }
         }
     }
@@ -623,6 +745,20 @@ void App::render_toolbar() {
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.2f, 1.0f), "Analyzing...");
     }
+    std::string error;
+    {
+        std::lock_guard<std::mutex> lock(data_mutex_);
+        error = status_error_;
+    }
+    if (!error.empty()) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%s", error.c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x##dismiss_error")) {
+            std::lock_guard<std::mutex> lock(data_mutex_);
+            status_error_.clear();
+        }
+    }
 }
 
 void App::render_sidebar(const UiSnapshot& snap) {
@@ -630,7 +766,7 @@ void App::render_sidebar(const UiSnapshot& snap) {
     if (has_audio_) {
         const auto name = std::filesystem::path(file_path_).filename().string();
         ImGui::TextWrapped("%s", name.c_str());
-        ImGui::Text("%.2f s  -  %d Hz", snap.duration, snap.audio.sample_rate);
+        ImGui::Text("%.2f s  -  %d Hz", snap.duration, snap.audio->sample_rate);
         ImGui::Text("Playhead: %.2f s", playhead_sec_.load());
     } else {
         ImGui::TextDisabled("No file loaded");
@@ -838,9 +974,9 @@ void App::render_plots(const UiSnapshot& snap) {
         ImPlot::SetupAxisLinks(ImAxis_X1, &view_start_sec_, &view_end_sec_);
         ImPlot::SetupAxisLimits(ImAxis_Y1, -1.05, 1.05, ImGuiCond_Always);
 
-        const int start_idx = (std::max)(0, static_cast<int>(view_start_sec_ * snap.audio.sample_rate));
-        const int end_idx = (std::min)(static_cast<int>(snap.audio.samples.size()),
-                                       static_cast<int>(view_end_sec_ * snap.audio.sample_rate));
+        const int start_idx = (std::max)(0, static_cast<int>(view_start_sec_ * snap.audio->sample_rate));
+        const int end_idx = (std::min)(static_cast<int>(snap.audio->samples.size()),
+                                       static_cast<int>(view_end_sec_ * snap.audio->sample_rate));
         const int step = (std::max)(1, (end_idx - start_idx) / 4000);
 
         std::vector<double> xs;
@@ -848,8 +984,8 @@ void App::render_plots(const UiSnapshot& snap) {
         xs.reserve(4096);
         ys.reserve(4096);
         for (int i = start_idx; i < end_idx; i += step) {
-            xs.push_back(static_cast<double>(i) / snap.audio.sample_rate);
-            ys.push_back(snap.audio.samples[static_cast<std::size_t>(i)]);
+            xs.push_back(static_cast<double>(i) / snap.audio->sample_rate);
+            ys.push_back(snap.audio->samples[static_cast<std::size_t>(i)]);
         }
 
         draw_markers(-1.05, 1.05);
@@ -914,32 +1050,22 @@ void App::render_plots(const UiSnapshot& snap) {
         ImPlot::SetupAxes("Time (s)", "Freq (Hz)", x_link, ImPlotAxisFlags_Lock);
         ImPlot::SetupAxisLinks(ImAxis_X1, &view_start_sec_, &view_end_sec_);
 
-        if (!snap.spec.frames.empty()) {
-            const int bins = static_cast<int>(snap.spec.frames[0].size());
-            const int frames = static_cast<int>(snap.spec.frames.size());
-            ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, static_cast<double>(snap.spec.sample_rate) / 2.0,
-                                    ImGuiCond_Always);
-
-            std::vector<float> heat(static_cast<std::size_t>(bins) * frames, 0.0f);
-            float min_v = 1e30f;
-            float max_v = -1e30f;
-            for (int t = 0; t < frames; ++t) {
-                for (int b = 0; b < bins; ++b) {
-                    const float v = static_cast<float>(std::log10(
-                        1e-12 + std::abs(snap.spec.frames[static_cast<std::size_t>(t)][static_cast<std::size_t>(b)])));
-                    heat[static_cast<std::size_t>(t) * bins + b] = v;
-                    min_v = (std::min)(min_v, v);
-                    max_v = (std::max)(max_v, v);
-                }
-            }
-
+        const double max_hz = snap.spec && snap.spec->cols > 0 ? snap.spec->max_hz : 1.0;
+        ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, max_hz, ImGuiCond_Always);
+        if (snap.spec && snap.spec->cols > 0) {
+            const auto& img = *snap.spec;
+            // Column-major storage makes the visible time range one contiguous
+            // slice, so only on-screen columns are submitted each frame.
+            const int c0 = std::clamp(static_cast<int>(std::floor(view_start_sec_ / img.col_sec)), 0, img.cols - 1);
+            const int c1 = std::clamp(static_cast<int>(std::ceil(view_end_sec_ / img.col_sec)), c0 + 1, img.cols);
             ImPlot::PushColormap(ImPlotColormap_Viridis);
-            ImPlot::PlotHeatmap("spec", heat.data(), bins, frames, min_v, max_v, nullptr,
-                                ImPlotPoint(0.0, 0.0),
-                                ImPlotPoint(snap.duration, static_cast<double>(snap.spec.sample_rate) / 2.0));
+            ImPlot::PlotHeatmap("spec", img.values.data() + static_cast<std::size_t>(c0) * img.rows, img.rows,
+                                c1 - c0, img.min_v, img.max_v, nullptr,
+                                ImPlotPoint(c0 * img.col_sec, 0.0), ImPlotPoint(c1 * img.col_sec, img.max_hz),
+                                ImPlotSpec(ImPlotProp_Flags, ImPlotHeatmapFlags_ColMajor));
             ImPlot::PopColormap();
         }
-        draw_playhead(0.0, static_cast<double>(snap.spec.frames.empty() ? 1 : snap.spec.sample_rate) / 2.0);
+        draw_playhead(0.0, max_hz);
         ImPlot::EndPlot();
     }
 }
@@ -983,9 +1109,9 @@ void App::render_ui() {
         snap.scores = score_frames_;
         snap.review = review_decisions_;
         snap.spec = spectrogram_;
-        snap.duration = audio_.samples.empty()
+        snap.duration = audio_->samples.empty()
                             ? 0.0
-                            : static_cast<double>(audio_.samples.size()) / audio_.sample_rate;
+                            : static_cast<double>(audio_->samples.size()) / audio_->sample_rate;
     }
     if (preview_request >= 0) {
         preview_marker_at(preview_request);

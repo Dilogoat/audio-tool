@@ -11,7 +11,7 @@ SUPPORTED FORMATS (OPEN)
 ------------------------
 WAV, MP3, FLAC, OGG, Opus, AIFF, CAF, W64
 
-Exports are lossless WAV plus JSON / label sidecars.
+Exports are mono 16-bit WAV (at the source sample rate) plus JSON / label sidecars.
 Your original files are never modified.
 
 HOW TO RUN (GUI)

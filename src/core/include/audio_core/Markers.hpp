@@ -28,6 +28,8 @@ public:
     void merge(const std::vector<Marker>& others);
     const std::vector<Marker>& all() const { return markers_; }
     std::vector<Marker> by_type(MarkerType type) const;
+    // Orders markers chronologically (ties by end time), stable across types.
+    void sort_by_time();
 
     void save_json(const std::string& path) const;
     static std::vector<Marker> load_json(const std::string& path);

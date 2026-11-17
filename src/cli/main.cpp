@@ -12,12 +12,24 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <thread>
 #include <string>
 #include <vector>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 namespace fs = std::filesystem;
 using audio_core::Logger;
@@ -131,6 +143,28 @@ bool parse_args(int argc, char** argv, Options& opt, std::string& error) {
         return argv[++i];
     };
 
+    // Numeric flags: report which flag had a bad value (exit 2) instead of
+    // letting std::stoi's "invalid stoi argument" escape.
+    auto need_number = [&](const char* flag, auto parse) -> decltype(parse(std::string{})) {
+        const std::string v = need_value(flag);
+        if (!error.empty()) {
+            return {};
+        }
+        try {
+            std::size_t used = 0;
+            const auto out = parse(v, &used);
+            if (used != v.size()) {
+                throw std::invalid_argument(v);
+            }
+            return out;
+        } catch (const std::exception&) {
+            error = std::string("invalid number for ") + flag + ": " + v;
+            return {};
+        }
+    };
+    auto as_int = [](const std::string& v, std::size_t* used = nullptr) { return std::stoi(v, used); };
+    auto as_double = [](const std::string& v, std::size_t* used = nullptr) { return std::stod(v, used); };
+
     for (; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--out-dir") {
@@ -163,7 +197,7 @@ bool parse_args(int argc, char** argv, Options& opt, std::string& error) {
                 pos = comma + 1;
             }
         } else if (a == "--crossfade-ms") {
-            opt.crossfade_ms = std::stod(need_value("--crossfade-ms"));
+            opt.crossfade_ms = need_number("--crossfade-ms", as_double);
         } else if (a == "--labels") {
             opt.labels = true;
         } else if (a == "--export-markers") {
@@ -177,9 +211,9 @@ bool parse_args(int argc, char** argv, Options& opt, std::string& error) {
         } else if (a == "--once") {
             opt.once = true;
         } else if (a == "--poll-ms") {
-            opt.poll_ms = std::stoi(need_value("--poll-ms"));
+            opt.poll_ms = need_number("--poll-ms", as_int);
         } else if (a == "--settle-ms") {
-            opt.settle_ms = std::stoi(need_value("--settle-ms"));
+            opt.settle_ms = need_number("--settle-ms", as_int);
         } else if (a == "-r" || a == "--recursive") {
             opt.recursive = true;
         } else if (a == "--force") {
@@ -233,16 +267,57 @@ struct FileOutcome {
     double peak_score = 0.0;
 };
 
-// Processes a single audio file. out_dir must already exist (unless dry-run).
-FileOutcome process_file(const fs::path& input, const fs::path& out_dir,
-                         const audio_core::Pipeline& pipeline, const Options& opt) {
+// One input file and where its outputs go.
+struct Job {
+    fs::path input;
+    fs::path out_dir;
+    std::string stem;
+};
+
+std::string lowercase(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return s;
+}
+
+bool ends_with(const std::string& s, const std::string& suffix) {
+    return s.size() >= suffix.size() && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+std::string local_timestamp() {
+    const std::time_t t = std::time(nullptr);
+    std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y%m%d-%H%M%S", &tm);
+    return buf;
+}
+
+// Copies a session file aside before it is overwritten, so review work that
+// cannot be carried onto the new detections is never silently destroyed.
+fs::path backup_session(const fs::path& session_path, const std::string& stem) {
+    const fs::path backup =
+        session_path.parent_path() / (stem + ".audiotool." + local_timestamp() + ".bak.json");
+    fs::copy_file(session_path, backup, fs::copy_options::overwrite_existing);
+    return backup;
+}
+
+// Processes a single audio file into job.out_dir using job.stem for every output.
+FileOutcome process_file(const Job& job, const audio_core::Pipeline& pipeline, const Options& opt) {
+    const fs::path& input = job.input;
+    const fs::path& out_dir = job.out_dir;
+    const std::string& stem = job.stem;
+
     FileOutcome outcome;
     outcome.input = input.string();
     Logger& log = Logger::instance();
 
     try {
         const fs::path in_canon = fs::weakly_canonical(input);
-        const std::string stem = input.stem().string();
 
         const fs::path markers_path = out_dir / (stem + ".markers.json");
         const fs::path report_path = out_dir / (stem + ".report.json");
@@ -290,12 +365,18 @@ FileOutcome process_file(const fs::path& input, const fs::path& out_dir,
                  std::to_string(result.pause_count) + " pauses, " +
                  std::to_string(result.click_count) + " clicks, " +
                  std::to_string(result.breath_count) + " breaths (" + std::to_string(ms) + " ms)");
+        if (audio.source_channels > 1) {
+            log.debug(input.filename().string() + ": " + std::to_string(audio.source_channels) +
+                      " channels mixed down to mono for analysis and audio outputs");
+        }
 
         if (opt.dry_run) {
             log.info(input.filename().string() + ": dry-run, no files written");
             outcome.ok = true;
             return outcome;
         }
+
+        fs::create_directories(out_dir);
 
         // Build the session, carrying over any human accept/reject decisions
         // from a prior run so re-processing honors them in every export.
@@ -304,14 +385,26 @@ FileOutcome process_file(const fs::path& input, const fs::path& out_dir,
         if (fs::exists(session_path)) {
             try {
                 const auto prior = audio_core::load_session_json(session_path.string());
-                const int carried = audio_core::merge_decisions(session, prior);
+                int unmatched = 0;
+                const int carried = audio_core::merge_decisions(session, prior, &unmatched);
                 if (carried > 0) {
                     log.info(input.filename().string() + ": carried " + std::to_string(carried) +
                              " prior review decision(s)");
                 }
+                if (unmatched > 0) {
+                    const auto backup = backup_session(session_path, stem);
+                    log.warn(input.filename().string() + ": " + std::to_string(unmatched) +
+                             " reviewed marker(s) no longer match a detection; previous session saved as " +
+                             backup.filename().string());
+                }
             } catch (const std::exception& ex) {
-                log.warn(session_path.filename().string() +
-                         ": ignoring unreadable prior session (" + std::string(ex.what()) + ")");
+                std::string where;
+                try {
+                    where = "; kept a copy as " + backup_session(session_path, stem).filename().string();
+                } catch (const std::exception&) {
+                }
+                log.warn(session_path.filename().string() + ": ignoring unreadable prior session (" +
+                         std::string(ex.what()) + ")" + where);
             }
         }
 
@@ -341,7 +434,7 @@ FileOutcome process_file(const fs::path& input, const fs::path& out_dir,
         } else if (!opt.export_marker_formats.empty()) {
             for (const auto fmt : opt.export_marker_formats) {
                 audio_core::export_markers(fmt, (out_dir / stem).string(), review_markers,
-                                             result.duration_sec, audio.sample_rate);
+                                           result.duration_sec, audio.sample_rate);
             }
             log.debug("wrote selected marker exports for " + stem);
         }
@@ -389,6 +482,106 @@ fs::path resolve_out_dir(const Options& opt, const fs::path& default_parent) {
     return default_parent / "audio-tool-out";
 }
 
+// Assigns every input an output folder and stem. With a root (batch/watch),
+// subfolders are mirrored under out_dir so a/ep1.wav and b/ep1.wav no longer
+// write the same files. Inputs that would still share a stem in one output
+// folder (ep1.wav + ep1.mp3) get the extension appended: ep1_wav, ep1_mp3.
+std::vector<Job> plan_jobs(const std::vector<fs::path>& inputs, const fs::path& root, const fs::path& out_dir) {
+    std::vector<Job> jobs;
+    jobs.reserve(inputs.size());
+    for (const auto& in : inputs) {
+        Job job;
+        job.input = in;
+        job.out_dir = out_dir;
+        if (!root.empty()) {
+            std::error_code ec;
+            const fs::path rel = fs::relative(in.parent_path(), root, ec);
+            if (!ec && !rel.empty() && rel != "." && *rel.begin() != "..") {
+                job.out_dir = out_dir / rel;
+            }
+        }
+        job.stem = in.stem().string();
+        jobs.push_back(std::move(job));
+    }
+
+    std::map<std::string, int> counts;
+    auto key_of = [](const Job& j) { return lowercase((j.out_dir / j.stem).generic_string()); };
+    for (const auto& j : jobs) {
+        ++counts[key_of(j)];
+    }
+    for (auto& j : jobs) {
+        if (counts[key_of(j)] > 1) {
+            std::string ext = j.input.extension().string();
+            if (!ext.empty() && ext.front() == '.') {
+                ext.erase(0, 1);
+            }
+            j.stem += "_" + lowercase(ext);
+        }
+    }
+    return jobs;
+}
+
+// Lists audio files under root. Never descends into exclude_dir (the output
+// folder, which may sit inside root), and ignores this tool's own rendered WAVs
+// when they live in exclude_dir, so outputs are never fed back in as inputs.
+// Filesystem errors (permission denied, files vanishing mid-scan) are logged
+// and skipped rather than thrown.
+std::vector<fs::path> collect_audio_files(const fs::path& root, bool recursive, const fs::path& exclude_dir) {
+    Logger& log = Logger::instance();
+    std::vector<fs::path> files;
+    std::error_code ec;
+    const fs::path root_canon = fs::weakly_canonical(root, ec);
+    fs::path excl;
+    if (!exclude_dir.empty()) {
+        excl = fs::weakly_canonical(exclude_dir, ec);
+    }
+
+    auto is_own_output = [&](const fs::path& p) {
+        if (excl.empty()) {
+            return false;
+        }
+        const std::string name = lowercase(p.filename().string());
+        if (!ends_with(name, ".cleaned.wav") && !ends_with(name, ".edited.wav")) {
+            return false;
+        }
+        std::error_code e2;
+        return fs::weakly_canonical(p.parent_path(), e2) == excl;
+    };
+
+    auto consider = [&](const fs::directory_entry& e) {
+        std::error_code e2;
+        if (e.is_regular_file(e2) && is_audio_file(e.path()) && !is_own_output(e.path())) {
+            files.push_back(e.path());
+        }
+    };
+
+    if (recursive) {
+        fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec);
+        const fs::recursive_directory_iterator end;
+        for (; !ec && it != end; it.increment(ec)) {
+            std::error_code e2;
+            if (it->is_directory(e2)) {
+                if (!excl.empty() && excl != root_canon && fs::weakly_canonical(it->path(), e2) == excl) {
+                    it.disable_recursion_pending();
+                }
+                continue;
+            }
+            consider(*it);
+        }
+    } else {
+        fs::directory_iterator it(root, fs::directory_options::skip_permission_denied, ec);
+        const fs::directory_iterator end;
+        for (; !ec && it != end; it.increment(ec)) {
+            consider(*it);
+        }
+    }
+    if (ec) {
+        log.warn("scan of " + root.string() + " stopped early: " + ec.message());
+    }
+    std::sort(files.begin(), files.end());
+    return files;
+}
+
 int run_analyze(const Options& opt) {
     Logger& log = Logger::instance();
     if (opt.inputs.empty()) {
@@ -399,6 +592,9 @@ int run_analyze(const Options& opt) {
     const audio_core::Pipeline pipeline(build_config(opt));
     int failures = 0;
 
+    // Group inputs by output folder so same-stem inputs sharing a folder are
+    // disambiguated rather than overwriting each other.
+    std::map<std::string, std::pair<fs::path, std::vector<fs::path>>> by_out;
     for (const auto& in : opt.inputs) {
         const fs::path input(in);
         if (!fs::exists(input)) {
@@ -407,12 +603,17 @@ int run_analyze(const Options& opt) {
             continue;
         }
         const fs::path out_dir = resolve_out_dir(opt, input.parent_path());
-        if (!opt.dry_run) {
-            fs::create_directories(out_dir);
-        }
-        const auto outcome = process_file(input, out_dir, pipeline, opt);
-        if (!outcome.ok && !outcome.skipped) {
-            ++failures;
+        auto& slot = by_out[lowercase(fs::weakly_canonical(out_dir).generic_string())];
+        slot.first = out_dir;
+        slot.second.push_back(input);
+    }
+
+    for (const auto& [key, group] : by_out) {
+        for (const auto& job : plan_jobs(group.second, {}, group.first)) {
+            const auto outcome = process_file(job, pipeline, opt);
+            if (!outcome.ok && !outcome.skipped) {
+                ++failures;
+            }
         }
     }
 
@@ -427,62 +628,57 @@ int run_batch(const Options& opt) {
     }
 
     const audio_core::Pipeline pipeline(build_config(opt));
-    std::vector<FileOutcome> outcomes;
-    const auto t0 = std::chrono::steady_clock::now();
+    bool any_failed = false;
 
     for (const auto& in : opt.inputs) {
         const fs::path root(in);
         if (!fs::exists(root) || !fs::is_directory(root)) {
             log.error("not a folder: " + in);
+            any_failed = true;
             continue;
         }
 
+        const auto t0 = std::chrono::steady_clock::now();
         const fs::path out_dir = resolve_out_dir(opt, root);
         if (!opt.dry_run) {
             fs::create_directories(out_dir);
         }
 
-        std::vector<fs::path> files;
-        if (opt.recursive) {
-            for (const auto& e : fs::recursive_directory_iterator(root)) {
-                if (e.is_regular_file() && is_audio_file(e.path())) {
-                    files.push_back(e.path());
-                }
-            }
-        } else {
-            for (const auto& e : fs::directory_iterator(root)) {
-                if (e.is_regular_file() && is_audio_file(e.path())) {
-                    files.push_back(e.path());
-                }
-            }
-        }
-        std::sort(files.begin(), files.end());
+        const auto files = collect_audio_files(root, opt.recursive, out_dir);
         log.info("Found " + std::to_string(files.size()) + " audio file(s) in " + root.string());
 
-        for (const auto& f : files) {
-            outcomes.push_back(process_file(f, out_dir, pipeline, opt));
+        // Outcomes are per input folder so each batch-summary.json only
+        // describes the files written next to it.
+        std::vector<FileOutcome> outcomes;
+        for (const auto& job : plan_jobs(files, opt.recursive ? root : fs::path{}, out_dir)) {
+            outcomes.push_back(process_file(job, pipeline, opt));
+        }
+
+        int ok = 0, skipped = 0, failed = 0;
+        nlohmann::json files_json = nlohmann::json::array();
+        for (const auto& o : outcomes) {
+            if (o.ok) ++ok;
+            else if (o.skipped) ++skipped;
+            else ++failed;
+            files_json.push_back({
+                {"input", o.input},
+                {"ok", o.ok},
+                {"skipped", o.skipped},
+                {"error", o.error},
+                {"total_markers", o.total_markers},
+                {"peak_composite_score", o.peak_score},
+            });
+        }
+        if (failed > 0) {
+            any_failed = true;
         }
 
         if (!opt.dry_run) {
-            const auto t1 = std::chrono::steady_clock::now();
-            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-
-            int ok = 0, skipped = 0, failed = 0;
-            nlohmann::json files_json = nlohmann::json::array();
-            for (const auto& o : outcomes) {
-                if (o.ok) ++ok;
-                else if (o.skipped) ++skipped;
-                else ++failed;
-                files_json.push_back({
-                    {"input", o.input},
-                    {"ok", o.ok},
-                    {"skipped", o.skipped},
-                    {"error", o.error},
-                    {"total_markers", o.total_markers},
-                    {"peak_composite_score", o.peak_score},
-                });
-            }
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     std::chrono::steady_clock::now() - t0)
+                                     .count();
             nlohmann::json summary{
+                {"root", root.string()},
                 {"processed", ok},
                 {"skipped", skipped},
                 {"failed", failed},
@@ -493,33 +689,15 @@ int run_batch(const Options& opt) {
             const fs::path summary_path = out_dir / "batch-summary.json";
             std::ofstream out(summary_path);
             out << summary.dump(2);
+            if (!out) {
+                log.warn("could not write " + summary_path.string());
+            }
             log.info("Summary: " + std::to_string(ok) + " ok, " + std::to_string(skipped) +
                      " skipped, " + std::to_string(failed) + " failed -> " + summary_path.string());
         }
     }
 
-    const bool any_failed = std::any_of(outcomes.begin(), outcomes.end(),
-                                        [](const FileOutcome& o) { return !o.ok && !o.skipped; });
     return any_failed ? 1 : 0;
-}
-
-std::vector<fs::path> collect_audio_files(const fs::path& root, bool recursive) {
-    std::vector<fs::path> files;
-    if (recursive) {
-        for (const auto& e : fs::recursive_directory_iterator(root)) {
-            if (e.is_regular_file() && is_audio_file(e.path())) {
-                files.push_back(e.path());
-            }
-        }
-    } else {
-        for (const auto& e : fs::directory_iterator(root)) {
-            if (e.is_regular_file() && is_audio_file(e.path())) {
-                files.push_back(e.path());
-            }
-        }
-    }
-    std::sort(files.begin(), files.end());
-    return files;
 }
 
 nlohmann::json load_watch_state(const fs::path& path) {
@@ -536,6 +714,9 @@ nlohmann::json load_watch_state(const fs::path& path) {
 void save_watch_state(const fs::path& path, const nlohmann::json& state) {
     std::ofstream out(path);
     out << state.dump(2);
+    if (!out) {
+        Logger::instance().warn("watch: could not write " + path.string());
+    }
 }
 
 long long write_stamp(const fs::path& path) {
@@ -599,41 +780,51 @@ int run_watch(const Options& opt) {
 
     int failures = 0;
     do {
-        for (const auto& file : collect_audio_files(root, process_opt.recursive)) {
-            if (!file_is_settled(file, process_opt.settle_ms)) {
-                continue;
-            }
-            const fs::path canon = fs::weakly_canonical(file);
-            const std::string key = canon.string();
-            const long long stamp = write_stamp(canon);
-            // Skip only if this exact version was already processed successfully.
-            // A prior failure (ok=false, not skipped) must be retried, otherwise
-            // a transient error would permanently strand the file until its mtime
-            // changes.
-            if (state.contains(key)) {
-                const auto& entry = state.at(key);
-                const bool done = entry.value("ok", false) || entry.value("skipped", false);
-                if (done && entry.value("stamp", 0LL) == stamp) {
+        const auto files = collect_audio_files(root, process_opt.recursive, out_dir);
+        for (const auto& job : plan_jobs(files, process_opt.recursive ? root : fs::path{}, out_dir)) {
+            // A file can be renamed, deleted or locked between the scan and
+            // here. Treat that as "not ready" and look again next poll instead
+            // of letting a filesystem_error end the watcher.
+            try {
+                if (!file_is_settled(job.input, process_opt.settle_ms)) {
                     continue;
                 }
-            }
+                const fs::path canon = fs::weakly_canonical(job.input);
+                const std::string key = canon.string();
+                const long long stamp = write_stamp(canon);
+                // Skip only if this exact version was already processed successfully.
+                // A prior failure (ok=false, not skipped) must be retried, otherwise
+                // a transient error would permanently strand the file until its mtime
+                // changes.
+                if (state.contains(key)) {
+                    const auto& entry = state.at(key);
+                    const bool done = entry.value("ok", false) || entry.value("skipped", false);
+                    if (done && entry.value("stamp", 0LL) == stamp) {
+                        continue;
+                    }
+                }
 
-            log.info("watch: processing " + file.filename().string());
-            auto outcome = process_file(canon, out_dir, pipeline, process_opt);
-            state[key] = {
-                {"stamp", stamp},
-                {"last_seen", std::chrono::duration_cast<std::chrono::seconds>(
-                                  std::chrono::system_clock::now().time_since_epoch())
-                                  .count()},
-                {"ok", outcome.ok},
-                {"skipped", outcome.skipped},
-                {"error", outcome.error},
-            };
-            if (!process_opt.dry_run) {
-                save_watch_state(state_path, state);
-            }
-            if (!outcome.ok && !outcome.skipped) {
-                ++failures;
+                log.info("watch: processing " + job.input.filename().string());
+                Job canon_job = job;
+                canon_job.input = canon;
+                auto outcome = process_file(canon_job, pipeline, process_opt);
+                state[key] = {
+                    {"stamp", stamp},
+                    {"last_seen", std::chrono::duration_cast<std::chrono::seconds>(
+                                      std::chrono::system_clock::now().time_since_epoch())
+                                      .count()},
+                    {"ok", outcome.ok},
+                    {"skipped", outcome.skipped},
+                    {"error", outcome.error},
+                };
+                if (!process_opt.dry_run) {
+                    save_watch_state(state_path, state);
+                }
+                if (!outcome.ok && !outcome.skipped) {
+                    ++failures;
+                }
+            } catch (const std::exception& ex) {
+                log.warn("watch: " + job.input.filename().string() + ": " + ex.what() + " (will retry)");
             }
         }
 
@@ -665,7 +856,7 @@ int run_init_config(const Options& opt) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int run_main(int argc, char** argv) {
     Options opt;
     std::string error;
     if (!parse_args(argc, argv, opt, error)) {
@@ -702,4 +893,20 @@ int main(int argc, char** argv) {
     std::cerr << "Error: unknown command '" << opt.command << "'\n\n";
     print_usage();
     return 2;
+}
+
+int main(int argc, char** argv) {
+#ifdef _WIN32
+    // The manifest makes narrow strings UTF-8; make the console agree so
+    // non-ASCII file names in log lines print correctly.
+    SetConsoleOutputCP(CP_UTF8);
+#endif
+    try {
+        return run_main(argc, argv);
+    } catch (const std::exception& ex) {
+        // An unparseable --config, an unknown --export-markers format and
+        // similar used to escape as an uncaught exception.
+        std::cerr << "Error: " << ex.what() << "\n";
+        return 3;
+    }
 }
