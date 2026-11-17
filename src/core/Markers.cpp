@@ -2,7 +2,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <fstream>
+#include <iomanip>
+#include <locale>
 #include <stdexcept>
 
 namespace audio_core {
@@ -32,6 +35,13 @@ void Markers::add(Marker marker) { markers_.push_back(std::move(marker)); }
 
 void Markers::merge(const std::vector<Marker>& others) {
     markers_.insert(markers_.end(), others.begin(), others.end());
+}
+
+void Markers::sort_by_time() {
+    std::stable_sort(markers_.begin(), markers_.end(), [](const Marker& a, const Marker& b) {
+        if (a.start_sec != b.start_sec) return a.start_sec < b.start_sec;
+        return a.end_sec < b.end_sec;
+    });
 }
 
 std::vector<Marker> Markers::by_type(MarkerType type) const {
@@ -68,6 +78,10 @@ void Markers::save_audacity_labels(const std::string& path) const {
     if (!out) {
         throw std::runtime_error("Failed to write labels file");
     }
+    // Fixed 6 decimals: the default 6 *significant* digits rounds times past
+    // ~16 minutes to 10 ms (and past ~2.8 hours to 100 ms).
+    out.imbue(std::locale::classic());
+    out << std::fixed << std::setprecision(6);
     for (const auto& m : markers_) {
         out << m.start_sec << '\t' << m.end_sec << '\t' << marker_type_to_string(m.type) << '\n';
     }

@@ -19,6 +19,7 @@ std::vector<Marker> TransientDetector::detect(const std::vector<float>& samples,
     const int hop = std::max(1, window / 2);
     RmsAnalyzer analyzer(sample_rate, window, hop);
     const auto frames = analyzer.analyze(samples);
+    const double window_sec = static_cast<double>(window) / sample_rate;
     if (frames.size() < 5) {
         return markers;
     }
@@ -31,8 +32,10 @@ std::vector<Marker> TransientDetector::detect(const std::vector<float>& samples,
         if (frames[i].rms >= config_.min_local_rms && ratio >= config_.spike_ratio) {
             Marker m;
             m.type = MarkerType::Click;
-            m.start_sec = std::max(0.0, frames[i].time_sec - config_.max_duration_sec / 2.0);
-            m.end_sec = frames[i].time_sec + config_.max_duration_sec / 2.0;
+            // Centre the marker on the middle of the spiking RMS window, not its start.
+            const double centre = frames[i].time_sec + window_sec / 2.0;
+            m.start_sec = std::max(0.0, centre - config_.max_duration_sec / 2.0);
+            m.end_sec = centre + config_.max_duration_sec / 2.0;
             m.score = std::min(1.0, ratio / (config_.spike_ratio * 2.0));
             markers.push_back(m);
         }

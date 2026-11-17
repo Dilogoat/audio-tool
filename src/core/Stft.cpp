@@ -65,6 +65,26 @@ Spectrogram Stft::forward(const std::vector<float>& samples) {
     return spec;
 }
 
+void Stft::for_each_frame(
+    const std::vector<float>& samples,
+    const std::function<void(std::size_t, const std::vector<std::complex<double>>&)>& fn) {
+    if (samples.empty()) {
+        return;
+    }
+    const auto window = hann_window(fft_size_);
+    for (std::size_t start = 0; start < samples.size(); start += static_cast<std::size_t>(hop_size_)) {
+        std::fill(in_.begin(), in_.end(), 0.0);
+        const std::size_t copy_count =
+            std::min(static_cast<std::size_t>(fft_size_), samples.size() - start);
+        for (std::size_t i = 0; i < copy_count; ++i) {
+            in_[i] = static_cast<double>(samples[start + i]) * window[i];
+        }
+        fftw_execute_dft_r2c(static_cast<fftw_plan>(plan_forward_), in_.data(),
+                             reinterpret_cast<fftw_complex*>(out_freq_.data()));
+        fn(start, out_freq_);
+    }
+}
+
 std::vector<float> Stft::inverse(const Spectrogram& spec) {
     if (spec.frames.empty()) {
         return {};

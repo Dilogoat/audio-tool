@@ -69,6 +69,7 @@ target_link_libraries(audio_tool PRIVATE
 
 if(WIN32)
     target_link_libraries(audio_tool PRIVATE opengl32)
+    target_sources(audio_tool PRIVATE src/common/utf8.manifest)
 endif()
 
 # Headless CLI (no GUI dependencies)
@@ -80,6 +81,10 @@ target_link_libraries(audio_tool_cli PRIVATE
     audio_core
     nlohmann_json::nlohmann_json
 )
+
+if(WIN32)
+    target_sources(audio_tool_cli PRIVATE src/common/utf8.manifest)
+endif()
 
 # Unit tests
 enable_testing()
@@ -99,6 +104,7 @@ add_executable(audio_tests
     tests/unit/test_session.cpp
     tests/unit/test_pipeline.cpp
     tests/unit/test_editor.cpp
+    tests/unit/test_cleaner.cpp
 )
 
 target_compile_definitions(audio_tests PRIVATE TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures")

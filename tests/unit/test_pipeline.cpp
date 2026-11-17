@@ -73,3 +73,22 @@ TEST_CASE("save_report_json writes a valid file", "[pipeline][report]") {
     REQUIRE(std::filesystem::file_size(path) > 0);
     std::filesystem::remove(path);
 }
+
+TEST_CASE("Pipeline returns markers in chronological order", "[pipeline]") {
+    const int sr = 44100;
+    std::vector<float> samples(static_cast<std::size_t>(sr) * 4, 0.02f);
+    // Pause at 1-2 s, click at 3 s.
+    for (int i = sr; i < 2 * sr; ++i) samples[static_cast<std::size_t>(i)] = 0.0f;
+    for (int i = -5; i <= 5; ++i) samples[static_cast<std::size_t>(3 * sr + i)] = 0.95f;
+    audio_core::AudioData audio;
+    audio.sample_rate = sr;
+    audio.samples = samples;
+    audio_core::PipelineConfig cfg;
+    cfg.transient.spike_ratio = 2.0;
+    const auto result = audio_core::Pipeline(cfg).analyze(audio, false);
+    const auto& all = result.markers.all();
+    REQUIRE(all.size() >= 2);
+    for (std::size_t i = 1; i < all.size(); ++i) {
+        REQUIRE(all[i - 1].start_sec <= all[i].start_sec);
+    }
+}

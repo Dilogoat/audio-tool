@@ -33,7 +33,7 @@ json config_to_json(const PipelineConfig& c) {
           {"breath_weight", c.score.breath_weight},
           {"pause_weight", c.score.pause_weight},
           {"frame_duration_sec", c.score.frame_duration_sec}}},
-        {"clean", {{"attenuation", c.clean.attenuation}, {"speech_floor_db", c.clean.speech_floor_db}}},
+        {"clean", {{"attenuation", c.clean.attenuation}, {"ramp_ms", c.clean.ramp_ms}}},
     };
 }
 
@@ -95,7 +95,8 @@ PipelineConfig PipelineConfig::from_json(const nlohmann::json& root) {
     if (root.contains("clean")) {
         const auto& cl = root.at("clean");
         read_into(cl, "attenuation", c.clean.attenuation);
-        read_into(cl, "speech_floor_db", c.clean.speech_floor_db);
+        read_into(cl, "ramp_ms", c.clean.ramp_ms);
+        // "speech_floor_db" from older presets was never used; it is ignored.
     }
 
     return c;
@@ -132,6 +133,10 @@ PipelineResult Pipeline::analyze(const AudioData& audio, bool produce_cleaned) c
         BreathDetector detector(config_.breath);
         result.markers.merge(detector.detect(audio.samples, audio.sample_rate));
     }
+
+    // Detectors run one type at a time; present one chronological timeline so
+    // exports, labels and the GUI list read in time order.
+    result.markers.sort_by_time();
 
     for (const auto& m : result.markers.all()) {
         switch (m.type) {

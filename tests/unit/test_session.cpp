@@ -233,3 +233,65 @@ TEST_CASE("merge_decisions carries prior decisions onto matching markers", "[ses
     // The new, unmatched marker stays pending.
     REQUIRE(fresh.markers[2].decision == audio_core::ReviewDecision::Pending);
 }
+
+TEST_CASE("merge_decisions survives small boundary shifts", "[session]") {
+    // A threshold tweak nudges every boundary; exact-time matching used to
+    // drop all review decisions in this case.
+    audio_core::Session prior;
+    prior.markers.push_back(make_marker(audio_core::MarkerType::Pause, 1.00, 2.00,
+                                        audio_core::ReviewDecision::Rejected));
+    prior.markers.push_back(make_marker(audio_core::MarkerType::Click, 5.000, 5.030,
+                                        audio_core::ReviewDecision::Accepted));
+
+    audio_core::Session fresh;
+    fresh.markers.push_back(make_marker(audio_core::MarkerType::Pause, 1.05, 1.95,
+                                        audio_core::ReviewDecision::Pending));
+    fresh.markers.push_back(make_marker(audio_core::MarkerType::Click, 5.0025, 5.0325,
+                                        audio_core::ReviewDecision::Pending));
+
+    int unmatched = -1;
+    REQUIRE(audio_core::merge_decisions(fresh, prior, &unmatched) == 2);
+    REQUIRE(unmatched == 0);
+    REQUIRE(fresh.markers[0].decision == audio_core::ReviewDecision::Rejected);
+    REQUIRE(fresh.markers[1].decision == audio_core::ReviewDecision::Accepted);
+}
+
+TEST_CASE("merge_decisions is one-to-one and reports unmatched review work", "[session]") {
+    audio_core::Session prior;
+    prior.markers.push_back(make_marker(audio_core::MarkerType::Pause, 1.0, 2.0,
+                                        audio_core::ReviewDecision::Rejected));
+    prior.markers.push_back(make_marker(audio_core::MarkerType::Pause, 1.1, 2.1,
+                                        audio_core::ReviewDecision::Accepted));
+    // A different type at the same time never matches.
+    prior.markers.push_back(make_marker(audio_core::MarkerType::Breath, 8.0, 8.4,
+                                        audio_core::ReviewDecision::Rejected));
+    // Pending without a note is not review work.
+    prior.markers.push_back(make_marker(audio_core::MarkerType::Pause, 20.0, 21.0,
+                                        audio_core::ReviewDecision::Pending));
+
+    audio_core::Session fresh;
+    fresh.markers.push_back(make_marker(audio_core::MarkerType::Pause, 1.0, 2.0,
+                                        audio_core::ReviewDecision::Pending));
+    fresh.markers.push_back(make_marker(audio_core::MarkerType::Click, 8.0, 8.4,
+                                        audio_core::ReviewDecision::Pending));
+
+    int unmatched = -1;
+    REQUIRE(audio_core::merge_decisions(fresh, prior, &unmatched) == 1);
+    REQUIRE(unmatched == 2);
+    // The exact overlap wins the single fresh pause.
+    REQUIRE(fresh.markers[0].decision == audio_core::ReviewDecision::Rejected);
+    REQUIRE(fresh.markers[1].decision == audio_core::ReviewDecision::Pending);
+    REQUIRE(audio_core::has_review_work(prior));
+}
+
+TEST_CASE("merge_decisions ignores weak overlaps", "[session]") {
+    audio_core::Session prior;
+    prior.markers.push_back(make_marker(audio_core::MarkerType::Pause, 1.0, 2.0,
+                                        audio_core::ReviewDecision::Rejected));
+    audio_core::Session fresh;
+    fresh.markers.push_back(make_marker(audio_core::MarkerType::Pause, 1.8, 3.0,
+                                        audio_core::ReviewDecision::Pending));
+    int unmatched = 0;
+    REQUIRE(audio_core::merge_decisions(fresh, prior, &unmatched) == 0);
+    REQUIRE(unmatched == 1);
+}
